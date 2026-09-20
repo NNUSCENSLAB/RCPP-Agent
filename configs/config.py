@@ -10,7 +10,7 @@ from configs.data_config import DEFAULT_WORKSPACE
 
 
 PROJECT_NAME = "RCPP-Agent"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 ENV_DEEPSEEK_API_KEY = "DEEPSEEK_API_KEY"
 ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
@@ -20,12 +20,32 @@ DEFAULT_INSTRUCTION_PARSE_MODEL = "deepseek-chat"
 DEFAULT_INSTRUCTION_PARSE_TEMPERATURE = 0.0
 
 
+def get_provider_api_key(provider: str) -> Optional[str]:
+    """Return credentials for exactly one provider; never cross-wire keys."""
+    normalized = provider.strip().lower()
+    if normalized == "deepseek":
+        return os.getenv(ENV_DEEPSEEK_API_KEY) or None
+    if normalized == "openai":
+        return os.getenv(ENV_OPENAI_API_KEY) or None
+    env_name = f"{normalized.upper()}_API_KEY"
+    return os.getenv(env_name) or None
+
+
+def provider_for_model(model_name: str) -> str:
+    configured = os.getenv("RCPP_GENERAL_PROVIDER", "").strip().lower()
+    if configured:
+        return configured
+    return "deepseek" if "deepseek" in model_name.lower() else "openai"
+
+
 def get_openai_api_key() -> Optional[str]:
-    key = os.getenv(ENV_DEEPSEEK_API_KEY) or os.getenv(ENV_OPENAI_API_KEY)
-    return key if key else None
+    """Compatibility helper for genuine OpenAI calls only."""
+    return get_provider_api_key("openai")
 
 
-# Environment Perception Agent: Qwen2.5-VL bases and fine-tuned checkpoint dirs
+# Backwards-compatible defaults. Runtime selection now lives in
+# ``rcpp_core.model_registry`` and can be switched with
+# RCPP_SCENE_MODEL_KEY / RCPP_SEMANTIC_MODEL_KEY after shadow evaluation.
 PERCEPTION_SCENE_BASE_MODEL = f"{DEFAULT_WORKSPACE}/Qwen2.5-VL/Qwen2.5-VL-7B-Instruct"
 PERCEPTION_SCENE_ADAPTER_PATH = f"{DEFAULT_WORKSPACE}/Qwen2.5-VL/qwen-vl-finetune/RPS_SCENE_MEMORY/output/Qwen2.5-VL-7B/checkpoints_20251220_062503"
 PERCEPTION_SEMANTIC_BASE_MODEL = f"{DEFAULT_WORKSPACE}/Qwen2.5-VL/Qwen2.5-7B-Instruct"

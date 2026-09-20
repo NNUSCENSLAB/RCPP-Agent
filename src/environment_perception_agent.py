@@ -16,12 +16,6 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from configs.config import (
-    PERCEPTION_SCENE_ADAPTER_PATH,
-    PERCEPTION_SCENE_BASE_MODEL,
-    PERCEPTION_SEMANTIC_ADAPTER_PATH,
-    PERCEPTION_SEMANTIC_BASE_MODEL,
-)
 from configs.data_config import (
     DEFAULT_WORKSPACE,
     path_default_scene_semantic_memory_json,
@@ -37,6 +31,7 @@ from rcpp_core.neo4j_scene_semantic_store import (
     area_slug_from_spatialite_context,
     scene_semantic_namespace,
 )
+from rcpp_core.memory_lifecycle import reusable
 from tools.memory_construction_tool.perception_pipeline import PerceptionPipeline
 
 logger = logging.getLogger(__name__)
@@ -64,10 +59,10 @@ class EnvironmentPerceptionAgent:
     def __init__(
         self,
         workspace_dir: str = DEFAULT_WORKSPACE,
-        scene_base_model: str = PERCEPTION_SCENE_BASE_MODEL,
-        scene_adapter_path: str = PERCEPTION_SCENE_ADAPTER_PATH,
-        semantic_base_model: str = PERCEPTION_SEMANTIC_BASE_MODEL,
-        semantic_adapter_path: str = PERCEPTION_SEMANTIC_ADAPTER_PATH,
+        scene_base_model: Optional[str] = None,
+        scene_adapter_path: Optional[str] = None,
+        semantic_base_model: Optional[str] = None,
+        semantic_adapter_path: Optional[str] = None,
     ):
         self._pipeline = PerceptionPipeline(
             workspace_dir=workspace_dir,
@@ -139,6 +134,23 @@ class EnvironmentPerceptionAgent:
                 len(prior),
             )
 
+        def prior_is_reusable() -> bool:
+            if not prior:
+                return False
+            for record in prior.values():
+                if not isinstance(record, dict):
+                    return False
+                node = record.get("memory_node")
+                if not isinstance(node, dict):
+                    return False
+                scene = node.get("scene_memory")
+                semantic = node.get("semantic_memory")
+                if not isinstance(scene, dict) or not isinstance(semantic, dict):
+                    return False
+                if not reusable(scene) or not reusable(semantic):
+                    return False
+            return True
+
         json_path: Optional[Path] = None
         if raw_json:
             json_path = resolve_scene_semantic_memory_json_path(
@@ -164,6 +176,9 @@ class EnvironmentPerceptionAgent:
                 json_path,
             )
             fresh = load_scene_semantic_memory_json_file(json_path)
+        elif prior_is_reusable():
+            logger.info("Reusing active high-quality memory for area=%s; inference bypassed.", area_slug)
+            fresh = {}
         else:
             fresh = self.process_from_spatialite(spatialite_context)
 

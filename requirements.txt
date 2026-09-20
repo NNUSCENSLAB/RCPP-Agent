@@ -20,10 +20,11 @@ plotly==5.17.0
 fastapi==0.115.12
 uvicorn==0.34.0
 pydantic-settings==2.7.1
-transformers==4.36.0
-torch==2.1.0
+transformers>=4.57,<5
+torch>=2.6
 sentencepiece==0.1.99
 accelerate==0.25.0
 qwen-vl-utils>=0.0.14
+peft>=0.15
 neo4j==5.14.0
 httpx==0.28.1

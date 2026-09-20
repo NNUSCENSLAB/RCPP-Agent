@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rcpp-agent"
+version = "1.1.0"
+description = "CLI runtime for fine-grained roadside charging-pile planning"
+requires-python = ">=3.10"
+dependencies = [
+  "langchain-core==1.2.31",
+  "langchain-openai==1.1.14",
+  "langgraph==1.1.6",
+  "langgraph-checkpoint-sqlite==3.0.3",
+  "pydantic==2.10.6",
+]
+
+[project.scripts]
+rcpp = "rcpp_cli.app:main"
+
+[tool.setuptools.packages.find]
+include = ["configs*", "rcpp_cli*", "rcpp_core*", "src*", "tools*"]

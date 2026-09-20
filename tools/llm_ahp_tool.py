@@ -13,6 +13,7 @@ two weighting modes:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Literal, Optional, TypedDict, Union, cast
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -52,9 +53,9 @@ from tools.multi_scenario_evaluation_tool.ahp_common import (
     parse_json_response,
 )
 from tools.registry import register_tool
+from rcpp_core.ahp_policy import cached_ahp_weights
 
 logger = logging.getLogger(__name__)
-
 
 def _stringify_message_content(content: Any) -> str:
     """
@@ -467,6 +468,15 @@ class LLMAHPTool(BaseTool):
                 raise ValueError("scenario_weights is required when kind='phase'")
             if phase is None:
                 raise ValueError("phase is required when kind='phase'")
+
+        weight_source = str(kwargs.get("weight_source") or os.getenv("RCPP_WEIGHT_SOURCE", "cached")).lower()
+        if weight_source not in {"cached", "expert", "llm"}:
+            raise ValueError("weight_source must be cached, expert, or llm")
+        if weight_source in {"cached", "expert"}:
+            out = cached_ahp_weights(kind, scenario, scenario_weights, phase)
+            if ctx is not None:
+                ctx.set(f"llm_ahp_{kind}_result", out)
+            return out
 
         initial: LLMAHPState = {
             "kind": kind,

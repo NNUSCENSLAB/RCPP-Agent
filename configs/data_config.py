@@ -8,9 +8,13 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Union
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    load_dotenv = None
 
-load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+if load_dotenv is not None:
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 
 
 # Environment variable names

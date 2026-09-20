@@ -11,6 +11,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point
 
+from rcpp_core.semantic_rules import deterministic_semantic_memory, derive_semantic_facts
 from tools.base import BaseTool, ToolCategory, ToolContext
 from tools.memory_construction_tool.od_flow_tool import load_od_flow_data, load_od_flow_data_from_gdfs
 from tools.memory_construction_tool.poi_statistics_tool import POIStatisticsTool
@@ -132,6 +133,8 @@ def _build_semantic_records(poi_tool: POIStatisticsTool, flow_summary: pd.DataFr
         statistical_summary["angle"] = angle
         if bsv_image:
             statistical_summary["bsv_image"] = bsv_image
+        rule_facts = derive_semantic_facts(statistical_summary)
+        gold_fallback = deterministic_semantic_memory(statistical_summary)
 
         training_record = {
             "messages": [
@@ -147,29 +150,20 @@ def _build_semantic_records(poi_tool: POIStatisticsTool, flow_summary: pd.DataFr
                         f"grid_accessibility (grid accessibility assessment).\n\n"
                         f"Note: This uses a layered buffer strategy - 1km for functional zone identification (residential/commercial), "
                         f"0.1km for sensitive facility compliance assessment.\n\n"
+                        f"【Rule Facts - copy exactly】\n{json.dumps(rule_facts, ensure_ascii=False, indent=2)}\n\n"
                         f"The semantic_reasoning will be used to build a knowledge graph where:\n"
                         f"- RPS node (id={rps_id}) connects to POI entities via spatial relationships\n"
                         f"- RPS node connects to grid infrastructure via distance relationships\n"
                         f"- RPS node connects to traffic flow regions via flow relationships\n"
-                        f"- Semantic attributes enrich the RPS node properties for graph-based reasoning"
+                        f"- Semantic attributes enrich the RPS node properties for graph-based reasoning\n\n"
+                        f"Do not recalculate labels or numbers. /no_think"
                     ),
                 },
                 {
                     "role": "assistant",
-                    "content": (
-                        f"{{\n  \"rps_id\": \"{rps_id}\",\n"
-                        f"  \"angle\": {angle},\n"
-                        f"  \"coordinates\": {{\n"
-                        f"    \"lng\": {coordinates[0]},\n"
-                        f"    \"lat\": {coordinates[1]},\n"
-                        f"    \"angle\": {angle}\n"
-                        f"  }},\n"
-                        f"  \"bsv_image\": {json.dumps(bsv_image) if bsv_image else 'null'},\n"
-                        f"  \"functional_zone_type\": \"null\",\n"
-                        f"  \"commuting_flow\": \"null\",\n"
-                        f"  \"sensitive_constraints\": \"null\",\n"
-                        f"  \"grid_accessibility\": \"null\"\n}}"
-                    ),
+                    # Deterministic, valid target/fallback. Human-authored prose from the
+                    # audited legacy dataset may replace these strings for QLoRA training.
+                    "content": json.dumps(gold_fallback, ensure_ascii=False),
                 },
             ]
         }

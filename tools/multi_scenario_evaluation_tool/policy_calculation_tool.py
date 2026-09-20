@@ -23,7 +23,16 @@ def evaluate(
     """
     del scene_memory, context, coordinates, rps_id
     sensitive_constraints_text = semantic_memory.get("sensitive_constraints", "")
-    risk_level, sensitive_count = extract_sensitive_risk(sensitive_constraints_text)
+    facts = semantic_memory.get("rule_facts") or {}
+    labels = facts.get("labels") or {}
+    evidence = facts.get("evidence") or {}
+    if labels.get("sensitive_risk"):
+        risk_level = {"none": "no_risk", "low": "low_risk", "high": "high_risk"}.get(
+            labels["sensitive_risk"], "unknown"
+        )
+        sensitive_count = int(evidence.get("sensitive_count_100m", 0))
+    else:
+        risk_level, sensitive_count = extract_sensitive_risk(sensitive_constraints_text)
     if risk_level == "no_risk" and sensitive_count == 0:
         policy_constraint_score = 1.0
         policy_assessment = "Fully compliant: no sensitive facilities"

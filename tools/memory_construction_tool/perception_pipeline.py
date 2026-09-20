@@ -99,7 +99,7 @@ class PerceptionPipeline:
             flush=True,
         )
 
-        logger.info("Toolchain: scene model inference (Qwen2.5-VL-7B + LoRA)")
+        logger.info("Toolchain: routed scene model inference")
         print(
             "[Perception] Step 2/5: Running fine-tuned scene model inference (this may take a while)...",
             flush=True,
@@ -132,7 +132,7 @@ class PerceptionPipeline:
             flush=True,
         )
 
-        logger.info("Toolchain: semantic model inference (Qwen2.5-7B + LoRA)")
+        logger.info("Toolchain: deterministic semantic rules + routed language model inference")
         print(
             "[Perception] Step 4/5: Running fine-tuned semantic model inference (this may take a while)...",
             flush=True,

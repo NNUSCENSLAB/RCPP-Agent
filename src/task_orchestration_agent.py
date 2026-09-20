@@ -24,7 +24,8 @@ from configs.config import (
     DEEPSEEK_API_BASE_URL,
     DEFAULT_INSTRUCTION_PARSE_TEMPERATURE,
     get_instruction_parse_model,
-    get_openai_api_key,
+    get_provider_api_key,
+    provider_for_model,
 )
 from configs.data_config import (
     DEFAULT_SPATIALITE_TABLES,
@@ -121,23 +122,24 @@ class TaskOrchestrationAgent:
         if not stripped:
             raise ValueError("Natural language instruction is empty.")
 
-        api_key = get_openai_api_key()
+        model_name = model or get_instruction_parse_model()
+        provider = provider_for_model(model_name)
+        api_key = get_provider_api_key(provider)
         if not api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY is not set; cannot parse natural language instruction."
+                f"API key is not set for provider {provider!r}; cannot parse natural language instruction."
             )
         registry_slugs = list(self.data_registry.keys())
         areas_line = ", ".join(registry_slugs) if registry_slugs else "gulou"
 
         system = INSTRUCTION_PARSE_SYSTEM_PROMPT.format(known_area_slugs=areas_line)
 
-        model_name = model or get_instruction_parse_model()
         llm_kwargs: Dict[str, Any] = {
             "model": model_name,
             "temperature": DEFAULT_INSTRUCTION_PARSE_TEMPERATURE,
             "api_key": SecretStr(api_key),
         }
-        if "deepseek" in model_name.lower():
+        if provider == "deepseek":
             llm_kwargs["base_url"] = DEEPSEEK_API_BASE_URL
         llm = ChatOpenAI(**llm_kwargs)
         try:
