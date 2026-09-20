@@ -1,0 +1,10 @@
+ms-swift>=4.0
+transformers>=4.57,<5
+torch>=2.6
+torchvision>=0.21
+peft>=0.15
+bitsandbytes>=0.45
+qwen-vl-utils>=0.0.14
+tensorboard>=2.18
+# Install flash-attn separately on the A100 image with:
+# pip install flash-attn --no-build-isolation

@@ -195,4 +195,105 @@ def save_global_scene_semantic_memory(area_slug: str, memory: Dict[str, Any]) ->
             area=slug,
             payload=payload,
         )
+        _save_versioned_memory_nodes(session, slug, memory)
     logger.info("Neo4j global scene_semantic_memory saved for area=%s (%s RPS keys).", slug, len(memory))
+
+
+def _version_row(
+    area_slug: str,
+    rps_id: str,
+    kind: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+    version = str(meta.get("adapter_version") or "legacy-v1")
+    return {
+        "area": area_slug,
+        "rps_id": rps_id,
+        "version": version,
+        "payload": json.dumps(payload, ensure_ascii=False, default=str),
+        "base_model": str(meta.get("base_model") or "unknown"),
+        "schema_version": str(meta.get("schema_version") or "1.0"),
+        "generated_at": str(meta.get("generated_at") or ""),
+        "quality_score": float(meta.get("quality_score") or 0.0),
+        "evidence_source": str(meta.get("evidence_source") or "legacy"),
+        "status": str(meta.get("status") or "active"),
+        "expires_at": str(meta.get("expires_at") or ""),
+    }
+
+
+def _save_versioned_memory_nodes(session: Any, area_slug: str, memory: Dict[str, Any]) -> None:
+    """Persist independently versioned SceneMemory and SemanticMemory nodes.
+
+    The legacy aggregate node remains the BaseStore compatibility surface.  The
+    normalized nodes make model versions queryable and independently rollable.
+    """
+    scene_rows: List[Dict[str, Any]] = []
+    semantic_rows: List[Dict[str, Any]] = []
+    rps_rows: List[Dict[str, Any]] = []
+    for key, record in memory.items():
+        if not isinstance(record, dict):
+            continue
+        rps_id = str(record.get("RPS_id") or key)
+        coords = record.get("coordinates") or []
+        rps_rows.append(
+            {
+                "area": area_slug,
+                "rps_id": rps_id,
+                "longitude": coords[0] if len(coords) > 0 else None,
+                "latitude": coords[1] if len(coords) > 1 else None,
+                "street_name": str(record.get("street_name") or ""),
+            }
+        )
+        node = record.get("memory_node") or {}
+        scene = node.get("scene_memory")
+        semantic = node.get("semantic_memory")
+        if isinstance(scene, dict):
+            scene_rows.append(_version_row(area_slug, rps_id, "scene", scene))
+        if isinstance(semantic, dict):
+            semantic_rows.append(_version_row(area_slug, rps_id, "semantic", semantic))
+
+    if rps_rows:
+        session.run(
+            """
+            UNWIND $rows AS row
+            MERGE (r:RPS {area_slug: row.area, rps_id: row.rps_id})
+            SET r.longitude = row.longitude,
+                r.latitude = row.latitude,
+                r.street_name = row.street_name,
+                r.updated_at = datetime()
+            """,
+            rows=rps_rows,
+        )
+    for label, relation, rows in (
+        ("SceneMemory", "HAS_SCENE_MEMORY", scene_rows),
+        ("SemanticMemory", "HAS_SEMANTIC_MEMORY", semantic_rows),
+    ):
+        if not rows:
+            continue
+        # Labels and relationship names are fixed constants, never user input.
+        session.run(
+            f"""
+            UNWIND $rows AS row
+            MATCH (r:RPS {{area_slug: row.area, rps_id: row.rps_id}})
+            OPTIONAL MATCH (r)-[:{relation}]->(old:{label})
+            WHERE old.is_current = true
+            SET old.is_current = false, old.status = 'superseded'
+            WITH r, row, collect(old) AS previous
+            MERGE (m:{label} {{area_slug: row.area, rps_id: row.rps_id, version: row.version}})
+            SET m.payload_json = row.payload,
+                m.base_model = row.base_model,
+                m.schema_version = row.schema_version,
+                m.generated_at = row.generated_at,
+                m.quality_score = row.quality_score,
+                m.evidence_source = row.evidence_source,
+                m.status = row.status,
+                m.expires_at = row.expires_at,
+                m.is_current = true,
+                m.updated_at = datetime()
+            MERGE (r)-[:{relation}]->(m)
+            WITH m, [old IN previous WHERE old IS NOT NULL AND old <> m] AS replaced
+            FOREACH (old IN replaced | MERGE (m)-[:SUPERSEDES]->(old))
+            """,
+            rows=rows,
+        )

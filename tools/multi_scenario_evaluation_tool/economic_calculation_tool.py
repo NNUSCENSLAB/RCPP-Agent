@@ -27,10 +27,14 @@ def evaluate(
     """
     del scene_memory, context, coordinates, rps_id
     functional_zone_text = semantic_memory.get("functional_zone_type", "")
-    p_res, p_comm = extract_poi_counts(functional_zone_text)
+    evidence = ((semantic_memory.get("rule_facts") or {}).get("evidence") or {})
+    parsed_res, parsed_comm = extract_poi_counts(functional_zone_text)
+    p_res = int(evidence.get("residential_count_1km", parsed_res))
+    p_comm = int(evidence.get("commercial_count_1km", parsed_comm))
     zone_type, _ = determine_zone_type_and_rcp_prob(p_res, p_comm)
     grid_accessibility_text = semantic_memory.get("grid_accessibility", "")
-    grid_distance = extract_grid_distance(grid_accessibility_text)
+    raw_distance = evidence.get("grid_distance_m")
+    grid_distance = float(raw_distance) if raw_distance is not None else extract_grid_distance(grid_accessibility_text)
     zone_cost_factors = {"residential": 0.7, "commercial": 0.9, "mixed": 0.8}
     zone_factor = zone_cost_factors.get(zone_type, 0.8)
     if grid_distance < 1000:

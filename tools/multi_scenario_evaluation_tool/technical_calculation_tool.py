@@ -23,7 +23,9 @@ def evaluate(
     """
     del scene_memory, context, coordinates, rps_id
     grid_accessibility_text = semantic_memory.get("grid_accessibility", "")
-    distance = extract_grid_distance(grid_accessibility_text)
+    evidence = ((semantic_memory.get("rule_facts") or {}).get("evidence") or {})
+    raw_distance = evidence.get("grid_distance_m")
+    distance = float(raw_distance) if raw_distance is not None else extract_grid_distance(grid_accessibility_text)
     capacity_score = max(0.0, 1.0 - distance / 1000.0)
     details: Dict[str, Any] = {
         "grid_distance_m": distance,

@@ -32,8 +32,10 @@ def evaluate(
     max_demand_for_norm = 10000.0
     commuting_flow_text = semantic_memory.get("commuting_flow", "")
     functional_zone_text = semantic_memory.get("functional_zone_type", "")
-    flow_total = extract_traffic_total(commuting_flow_text)
-    p_res, p_comm = extract_poi_counts(functional_zone_text)
+    evidence = ((semantic_memory.get("rule_facts") or {}).get("evidence") or {})
+    flow_total = float(evidence.get("total_flow", extract_traffic_total(commuting_flow_text)))
+    p_res = int(evidence.get("residential_count_1km", extract_poi_counts(functional_zone_text)[0]))
+    p_comm = int(evidence.get("commercial_count_1km", extract_poi_counts(functional_zone_text)[1]))
     zone_type, p_use_rcp = determine_zone_type_and_rcp_prob(p_res, p_comm)
     charging_demand_kwh = (
         float(flow_total)

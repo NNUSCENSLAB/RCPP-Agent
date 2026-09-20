@@ -16,7 +16,8 @@ from configs.config import (
     DEEPSEEK_API_BASE_URL,
     DEFAULT_LLM_AHP_TEMPERATURE,
     get_llm_ahp_model,
-    get_openai_api_key,
+    get_provider_api_key,
+    provider_for_model,
 )
 from rcpp_core.prompts import phased_allocation_human_prompt
 from tools.multi_scenario_evaluation_tool.ahp_common import parse_json_response
@@ -53,12 +54,13 @@ class PhasedAllocationTool:
 
     def _get_llm(self) -> ChatOpenAI:
         name = (self.model_name or get_llm_ahp_model()).strip()
-        key = (self.api_key or get_openai_api_key() or "").strip()
+        provider = provider_for_model(name)
+        key = (self.api_key or get_provider_api_key(provider) or "").strip()
         if not key:
             raise RuntimeError("API key not set for phased allocation: set DEEPSEEK_API_KEY or OPENAI_API_KEY.")
         if self.llm_provider != "openai":
             raise ValueError(f"Unsupported LLM provider: {self.llm_provider}")
-        if "deepseek" in name.lower():
+        if provider == "deepseek":
             return ChatOpenAI.model_validate(
                 {
                     "model": name,

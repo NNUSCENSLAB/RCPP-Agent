@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
 """Merge scene-memory and semantic memor into a multimodal scene-semantic memory."""
 import json
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import geopandas as gpd
-import pandas as pd
-
+from rcpp_core.semantic_rules import extract_statistical_summary
 from tools.base import BaseTool, ToolCategory, ToolContext
 from tools.registry import register_tool
 
@@ -32,27 +29,27 @@ def parse_semantic_memory(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     Parse semantic memory fields from chat messages.
     """
     user_content = str(messages[0]["content"])
-
-    rps_id_match = re.search(r"RPS ID: (\d+)", user_content)
-    if not rps_id_match:
-        raise ValueError("RPS ID not found in user message")
-    rps_id = rps_id_match.group(1)
-
-    lng_match = re.search(r'"lng":\s*([\d.]+)', user_content)
-    lat_match = re.search(r'"lat":\s*([\d.]+)', user_content)
-    angle_match = re.search(r'"angle":\s*([\d.]+)', user_content)
-
-    if not lng_match or not lat_match or not angle_match:
-        raise ValueError("Could not parse lng/lat/angle from user message")
-
-    lng = float(lng_match.group(1))
-    lat = float(lat_match.group(1))
-    angle = float(angle_match.group(1))
-
+    summary = extract_statistical_summary(user_content)
+    coordinates = summary.get("coordinates") or {}
     assistant_content = messages[1]["content"]
     semantic_data = json.loads(str(assistant_content))
+    rps_id = str(semantic_data.get("rps_id") or summary.get("rps_id") or "")
+    if not rps_id:
+        raise ValueError("RPS ID not found in semantic record")
+    lng = float(coordinates.get("lng"))
+    lat = float(coordinates.get("lat"))
+    angle = float(coordinates.get("angle", summary.get("angle", 0.0)))
+    bsv_image = semantic_data.get("bsv_image") or summary.get("bsv_image", "")
 
-    bsv_image = semantic_data.get("bsv_image", "")
+    memory_fields = {
+        "functional_zone_type": semantic_data.get("functional_zone_type", ""),
+        "commuting_flow": semantic_data.get("commuting_flow", ""),
+        "sensitive_constraints": semantic_data.get("sensitive_constraints", ""),
+        "grid_accessibility": semantic_data.get("grid_accessibility", ""),
+    }
+    for optional in ("rule_facts", "evidence_fields", "_meta"):
+        if optional in semantic_data:
+            memory_fields[optional] = semantic_data[optional]
     
     return {
         'rps_id': rps_id,
@@ -60,12 +57,7 @@ def parse_semantic_memory(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         'lat': lat,
         'angle': angle,
         'bsv_image': bsv_image,
-        'semantic_memory': {
-            'functional_zone_type': semantic_data.get('functional_zone_type', ''),
-            'commuting_flow': semantic_data.get('commuting_flow', ''),
-            'sensitive_constraints': semantic_data.get('sensitive_constraints', ''),
-            'grid_accessibility': semantic_data.get('grid_accessibility', '')
-        }
+        'semantic_memory': memory_fields,
     }
 
 def parse_scene_memory_from_conversations(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -79,19 +71,26 @@ def parse_scene_memory_from_conversations(item: Dict[str, Any]) -> Dict[str, Any
     gpt_value = conversations[1]['value']
     scene_memory = json.loads(gpt_value)
     
-    return {
-        'clearance_visual_assessment': scene_memory.get('clearance_visual_assessment', False),
-        'scene_reasoning': scene_memory.get('scene_reasoning', '')
-    }
+    return scene_memory
 
 def extract_scene_memory_node(scene_memory: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract the scene-memory node: fields placed under memory_node.scene_memory in the merged memory.
     """
-    return {
-        'clearance_visual_assessment': str(scene_memory.get('clearance_visual_assessment', False)),
-        'scene_reasoning': scene_memory.get('scene_reasoning', '')
-    }
+    fields = (
+        "has_existing_RCP",
+        "is_functional_zone",
+        "functional_zone_type",
+        "has_ground_obstacle",
+        "ground_obstacle_types",
+        "ground_obstacle_count",
+        "visual_distractors_noted",
+        "clearance_visual_assessment",
+        "scene_reasoning",
+        "confidence_score",
+        "_meta",
+    )
+    return {name: scene_memory[name] for name in fields if name in scene_memory}
 
 def _pic_key_from_row(row: Any) -> Optional[str]:
     """Return stripped Pic string for use as map key, or None if missing."""
@@ -99,7 +98,7 @@ def _pic_key_from_row(row: Any) -> Optional[str]:
     if pic_raw is None:
         return None
     try:
-        if bool(pd.isna(pic_raw)):
+        if pic_raw != pic_raw:  # NaN without importing pandas at module import time.
             return None
     except (ValueError, TypeError):
         pass
@@ -111,6 +110,8 @@ def load_shp_mapping(shp_path: str) -> Dict[str, Dict[str, Any]]:
     """
     The 'Pic' field serves as an anchor to merge scene memory and semantic memory.
     """
+    import geopandas as gpd
+
     mapping: Dict[str, Dict[str, Any]] = {}
     shp_path_obj = Path(shp_path)
 

@@ -19,7 +19,8 @@ from configs.config import (
     LLM_AHP_MAX_RETRIES,
     MCDA_DIMENSIONS,
     get_llm_ahp_model,
-    get_openai_api_key,
+    get_provider_api_key,
+    provider_for_model,
 )
 from rcpp_core import scenario_narrative, all_scenarios_reference_block
 
@@ -104,9 +105,10 @@ def build_chat_openai(
     so the assistant message body is a single JSON object.
     """
     name = model_name or get_llm_ahp_model()
-    key = api_key or get_openai_api_key()
+    provider = provider_for_model(name)
+    key = api_key or get_provider_api_key(provider)
     if not key:
-        raise RuntimeError("OPENAI_API_KEY is not set for LLM-AHP.")
+        raise RuntimeError(f"API key is not set for {provider!r} LLM-AHP.")
     model_kwargs: Dict[str, object] = {}
     if json_mode:
         model_kwargs["response_format"] = {"type": "json_object"}
@@ -117,7 +119,7 @@ def build_chat_openai(
     }
     if model_kwargs:
         common["model_kwargs"] = model_kwargs
-    if "deepseek" in name.lower():
+    if provider == "deepseek":
         common["base_url"] = DEEPSEEK_API_BASE_URL
     return ChatOpenAI.model_validate(common)
 

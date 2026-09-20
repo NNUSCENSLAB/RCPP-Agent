@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Built-in RCPP-Agent tool package (side-effect imports register tools)."""
+"""Built-in RCPP-Agent tool package.
+
+Concrete tool modules register themselves when imported by an agent.  Keeping
+this package initializer lightweight lets data and evaluation utilities import
+one tool without requiring every GIS/LLM dependency.
+"""
 from tools.base import BaseTool, ToolCategory, ToolContext
 from tools.registry import get_all_registered, get_tool_classes, register_tool
-
-import tools.data_flow_tool 
-import tools.memory_construction_tool 
-import tools.multi_scenario_evaluation_tool  
-import tools.llm_ahp_tool 
-import tools.review_tool.review_registry_tools  
 
 __all__ = [
     "BaseTool",

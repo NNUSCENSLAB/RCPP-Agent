@@ -47,43 +47,23 @@ Output ONLY a JSON with this exact schema (no extra text):
   "visual_distractors_noted": ["none" | "tree_canopy" | "greenbelt"],
   "clearance_visual_assessment": boolean,
   "scene_reasoning": "concise reasoning referencing the RED-BOXED STALL",
-  "confidence_score": 5
+  "confidence_score": integer from 1 to 5
 }
 
+Confidence must reflect visual certainty: 1 means highly uncertain and 5 means clear, direct visual evidence.
 Do not mention non-red-box zones. Do not output anything outside the JSON."""
 
 
 SEMANTIC_SYSTEM_PROMPT = """You are an expert in roadside parking stall (RPS) semantic reasoning for fine-grained EV charging planning.
 
 Goal
-Transform quantitative Statistical Summaries into a structured semantic_reasoning JSON object by applying the Expert Rule Set.
+Turn deterministic rule facts supplied in the user message into a concise, evidence-grounded semantic memory.
+The rule engine, not the language model, owns all numeric calculations and categorical labels.
 
-Expert Rule Set (Mandatory Logic)
-Functional Zone Type (Priority: Residential vs Commercial ratio)
-Residential-Oriented: Residential count > 1.5 * Commercial count AND Residential count >= 5. (Focus: Overnight slow charging).
-Commercial-Oriented: Commercial count > 1.5 * Residential count AND Commercial count >= 5. (Focus: Daytime fast charging).
-Mixed Functional Type: Both Residential count >= 5 and Commercial count >= 5. (Focus: Stable all-day load).
-Low Density: Both Residential and Commercial counts < 5.
-
-Commuting Flow (Total Flow = Inflow + Outflow)
-High Traffic: Total Flow > 100,000. (High turnover, roadside hotspots).
-Medium Traffic: Total Flow between 50,000 and 100,000. (Steady flow, standard load).
-Low Traffic: Total Flow < 50,000. (Low activity, destination-based).
-Sensitive Constraints (Sum = Medical + Education + Public POIs)
-High Risk: Sum >= 2. (Flag emergency lanes, school safety, strict controls).
-Low Risk: 0 < Sum < 2. (Minor compliance risks).
-No Risk: Sum = 0.
-
-Grid Accessibility (Distance = Grid Distance)
-Excellent: Distance < 500m. (Low cost, high power support).
-General: Distance between 1000m and 2000m. (Moderate cost).
-Very Poor: Distance >= 5000m. (Extreme engineering difficulty).
-
-Input mapping (from the Statistical Summary JSON in the user message)
-- Residential / commercial counts: poi_counts_1km.residential, poi_counts_1km.commercial.
-- Sensitive sum: add medical + education + government_public (or equivalent public categories) from poi_counts_sensitive_0.1km when listed separately; if only a single aggregate is provided, use it as the sum.
-- Total Flow: traffic_flow_stats.total_inflow + traffic_flow_stats.total_outflow.
-- Grid distance in metres: use infrastructure_dist.grid_distance_km * 1000 when grid_distance_km is non-negative; apply Grid Accessibility rules to that distance in metres.
+Mandatory grounding rules
+- Copy the canonical labels from Rule Facts exactly; never recalculate or rename them.
+- Copy numeric evidence from Rule Facts exactly; never invent measurements or POIs.
+- If an explanation cannot be grounded in a supplied field, omit it.
 
 Output JSON Schema
 Output ONLY valid JSON:
@@ -93,14 +73,16 @@ Output ONLY valid JSON:
   "commuting_flow": "Traffic volume assessment + potential for turnover/topping-up demand.",
   "sensitive_constraints": "Risk level (High/Low/No) + specific impact of sensitive POIs on compliance.",
   "grid_accessibility": "Accessibility rating + engineering cost/feasibility implication.",
-  "bsv_image": "copy filename from input Statistical Summary if present, else null"
+  "bsv_image": "copy filename from input Statistical Summary if present, else null",
+  "rule_facts": "copy the complete supplied Rule Facts object without modification",
+  "evidence_fields": ["names of evidence fields actually referenced"]
 }
 
 Writing Style Requirements
 Reasoning must be synthesized: "Based on [Data], the area is [Type], therefore [Inference]."
 Use clear, logical descriptions to explain the relationship between data and the final inference.
 Ensure the semantic_reasoning fields follow the logic of the scenario examples provided in the Expert Rule Set.
-No extra text outside the JSON."""
+No chain of thought and no extra text outside the JSON."""
 
 
 # Multi-scenario & Phased Decision-Making Agents: LLM-AHP shared prompt intro

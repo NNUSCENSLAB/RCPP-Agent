@@ -40,22 +40,21 @@ from rcpp_core.neo4j_scene_semantic_store import (
     area_slug_from_spatialite_context,
     scene_semantic_namespace,
 )
-from rcpp_core.prompts import NATURAL_LANGUAGE_USER_PROMPT_EN
-from task_orchestration_agent import TaskOrchestrationAgent
-from environment_perception_agent import EnvironmentPerceptionAgent
-from suitability_assessment_agent import (
+from src.task_orchestration_agent import TaskOrchestrationAgent
+from src.environment_perception_agent import EnvironmentPerceptionAgent
+from src.suitability_assessment_agent import (
     SuitabilityAssessmentAgent,
     export_suitability_shapefiles,
     guess_rps_id_column,
     load_rps_gdf_for_export,
 )
-from multi_scenario_evaluation_agent import MultiScenarioEvaluationAgent
-from phased_decision_making_agent import (
+from src.multi_scenario_evaluation_agent import MultiScenarioEvaluationAgent
+from src.phased_decision_making_agent import (
     PhasedDecisionMakingAgent,
     export_phase_rps_shapefile,
     write_json_path,
 )
-from review_agent import ReviewAgent, write_review_metrics_json
+from src.review_agent import ReviewAgent, write_review_metrics_json
 
 logger = logging.getLogger(__name__)
 
@@ -744,7 +743,7 @@ def create_rcpp_workflow(
     return workflow.compile(checkpointer=checkpointer, store=store)
 
 
-# Public entrypoint
+# Public workflow runtime used by the CLI.
 class RCPPAgent:
 
     # Wire agents, checkpointing, and the compiled LangGraph workflow.
@@ -869,29 +868,3 @@ class RCPPAgent:
         """
         config = {"configurable": {"thread_id": thread_id}}
         return list(self.workflow.get_state_history(config))
-
-
-def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    print(NATURAL_LANGUAGE_USER_PROMPT_EN, flush=True)
-    instruction = (input() or "").strip()
-    if not instruction:
-        print("No instruction entered. Exiting.", file=sys.stderr, flush=True)
-        sys.exit(1)
-
-    agent = RCPPAgent()
-    global_instruction = agent.task_orchestration_agent.parse_natural_language_to_global_instruction(
-        instruction,
-        workspace_dir=None,
-    )
-
-    agent.run(global_instruction)
-
-
-if __name__ == "__main__":
-    main()
