@@ -221,6 +221,15 @@ RCPP-Agent/
 
 ## Changelog
 
+### 2026-09-20 v1.1
+
+1. Added the `rcpp` CLI as the only supported runtime entrypoint, with run manifests, status inspection, and checkpoint resume.
+2. Added independently versioned Scene and Semantic memories with lifecycle states, quality gates, expiry handling, and Neo4j `SUPERSEDES` relationships.
+3. Added policy-driven memory-aware dynamic routing for memory reuse, incremental inference, conflict refresh, validation fallback, and human review.
+4. Added Provider-neutral LLM configuration, credential isolation, and production-safe Shadow model execution.
+5. Added OpenSpec change specifications, regression tests, offline evaluation utilities, and model promotion gates.
+6. Moved the LangGraph workflow runtime from `src/rcpp_agent.py` to `rcpp_core/runtime.py` and updated the project documentation.
+
 ### 2026-04-22 v1.0
 
 1. Created the RCPP-Agent.
