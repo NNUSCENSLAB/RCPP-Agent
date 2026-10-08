@@ -1,235 +1,260 @@
-# RCPP-Agent
+<div align="center">
 
-## Overview
-RCPP-Agent is a LLM-based multi-agent architecture for fine-grained roadside charging pile planning. This architecture integrates six specialized agents to operationalize an expert-inspired planning workflow, from multimodal environmental perception and suitability assessment to multi-scenario evaluation and phased decision-making.
+<h1 align="center">RCPP-Agent: Roadside Charging Piles Planning Agent</h1>
 
-```mermaid
-flowchart TB
-    subgraph INTERFACE["Interface Layer"]
-        CLI["RCPP CLI"]
-    end
+<p><strong>Explainable Planning for Roadside EV Charging Infrastructure</strong></p>
 
-    subgraph ORCHESTRATION["Orchestration & State Layer"]
-        SUP["Task Orchestration / Supervisor"]
-        STATE[("LangGraph State & Checkpoints")]
-        SUP <--> STATE
-    end
+<p>Street-view imagery · Urban spatial data · Multi-stage planning</p>
 
-    subgraph AGENTS["Domain Agent Workflow"]
-        EP["Environment Perception"] --> SA["Suitability Assessment"]
-        SA --> ME["Multi-Scenario Evaluation"]
-        ME --> PD["Phased Decision-Making"]
-        PD --> RV["Review Agent"]
-        RV -->|revise weights| ME
-    end
+<p>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+"></a>
+  <a href="https://github.com/langchain-ai/langgraph"><img src="https://img.shields.io/badge/Orchestration-LangGraph-1C3C3C" alt="LangGraph"></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-1.1.0-6f42c1" alt="Version 1.1.0"></a>
+</p>
 
-    subgraph INTELLIGENCE["Intelligence Layer"]
-        ROUTER["Memory-Aware Model Router"]
-        PROD["Production Models"]
-        SHADOW["Shadow Candidates"]
-        RULES["Deterministic Rules & Validators"]
-        ROUTER --> PROD
-        ROUTER -.-> SHADOW
-        ROUTER --> RULES
-    end
+[What is RCPP-Agent?](#what-is-rcpp-agent) · [Quick Start](#quick-start) · [Architecture](#architecture) · [Why RCPP-Agent?](#why-rcpp-agent)
 
-    subgraph DATA["Memory, Tools & Data Layer"]
-        MEM[("Neo4j Long-Term Memory")]
-        SCENE["Scene Memory"]
-        SEMANTIC["Semantic Memory"]
-        TOOLS["Spatial / MCDA / Review Tools"]
-        SOURCES[("SpatiaLite · BSV · POI · OD · Grid")]
-        MEM --- SCENE
-        MEM --- SEMANTIC
-        SOURCES --> TOOLS
-    end
+</div>
 
-    subgraph GOVERNANCE["Evaluation & Governance"]
-        EVAL["Offline Evals & Promotion Gates"]
-        SPEC["OpenSpec & Regression Tests"]
-        TRACE["Run Manifests & Route Traces"]
-    end
+---
 
-    CLI --> SUP --> EP
-    EP <--> ROUTER
-    EP <--> MEM
-    SA <--> MEM
-    PD -->|planning annotations| MEM
-    TOOLS --> EP
-    TOOLS --> SA
-    TOOLS --> ME
-    TOOLS --> PD
-    RV -->|approved| OUT["Phased RCP Plan"]
-    EVAL -.-> ROUTER
-    SPEC -.-> SUP
-    SUP -.-> TRACE
-```
+## What is RCPP-Agent?
 
+**RCPP-Agent is a multi-agent system for planning roadside EV charging infrastructure using street-view imagery and urban spatial data.**
 
-## Prerequisites
+The workflow uses LangGraph to coordinate perception, suitability assessment, scenario evaluation, phased planning, and outcome review. Each stage records its evidence and intermediate state. This makes interrupted runs resumable and the resulting plans easier to inspect.
 
-- Python **3.10+**
-- SpatiaLite
-- Neo4j Database
-- Fine-tuned LLM and MLLM
-- Optional LLM API key for natural-language parsing or LLM-AHP
+### Where to start
 
-## Installation
+| Task | Command | Requirements |
+| --- | --- | --- |
+| Understand the routing policy | `rcpp router explain --kind scene --memory-state fresh --memory-quality 0.95` | Installed package only |
+| Inspect existing memory | `rcpp memory inspect <path>` | Scene-semantic memory JSON |
+| Run a reproducible district plan | `rcpp data import` → `rcpp plan run` | Study-area data, SpatiaLite, Neo4j, local models |
+| Use natural-language instructions | `rcpp plan run --instruction "..."` | Configured reasoning provider |
 
-Clone the repository to your local machine:
+> [!NOTE]
+> Full district runs require local data and model assets. Cloud LLM features are optional.
+
+## Quick Start
+
+### 1. Install
 
 ```bash
 git clone https://github.com/NNUSCENSLAB/RCPP-Agent.git
 cd RCPP-Agent
+
+python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+# Windows: .venv\Scripts\activate
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -e . --no-deps
 ```
 
-Install the required packages (Python 3.9+):
+RCPP-Agent requires **Python 3.10+**.
 
-```bash
-pip install -r requirements.txt
-pip install -e . --no-deps
-```
-
-## Configuration
-
-- Create **`configs/.env`** for secrets and overrides.
-- **`configs/config.py`** defines global multi-agent settings.
-- **`configs/data_config.py`** defines workspace paths, Neo4j env names, and SpatiaLite defaults.
-
-## CLI usage
-
-`rcpp` is the only supported executable entrypoint. Start with a readiness check:
+### 2. Check your environment
 
 ```bash
 rcpp doctor
 ```
 
-Import study-area data and run a structured plan without a cloud language-model API:
+This reports workspace, model, provider, and credential readiness without launching a planning run.
+
+### 3. Try the routing policy
+
+This command requires no study-area dataset and demonstrates how validated memory can bypass inference:
 
 ```bash
+rcpp router explain \
+  --kind scene \
+  --memory-state fresh \
+  --memory-quality 0.95
+```
+
+The routing result includes this action:
+
+```json
+{
+  "action": "reuse_memory"
+}
+```
+
+### 4. Run a study area
+
+Prepare the following input layout:
+
+```text
+<study-area>/
+├── BSV/                  # street-view images
+├── OD/
+│   ├── regions.shp
+│   └── od_flows.shp
+├── POI/                  # CSV files with name, lng, lat
+├── RPS/                  # candidate roadside parking-space shapefiles
+└── roads/                # road-network shapefiles
+```
+
+Configure the data location and launch a reproducible run:
+
+```bash
+# Linux/macOS
+export RCPPAGENT_RAW_DATA_BASE=/absolute/path/to/study-area
+export RCPPAGENT_WORKSPACE=/absolute/path/to/RCPP-Agent
+
+# PowerShell
+# $env:RCPPAGENT_RAW_DATA_BASE = "C:\path\to\study-area"
+# $env:RCPPAGENT_WORKSPACE = "C:\path\to\RCPP-Agent"
+
 rcpp data import --area <district_slug>
-rcpp plan run --area <district_slug> --scenario balance_oriented \
-  --start-year 2025 --end-year 2030 --weight-source cached
+
+rcpp plan run \
+  --area <district_slug> \
+  --scenario balance_oriented \
+  --start-year 2025 \
+  --end-year 2030 \
+  --weight-source cached
 ```
 
-Inspect or resume a run:
+Structured arguments with `cached` weights are the default reproducible path and do not require a cloud LLM API.
 
-```bash
-rcpp plan status <run-id>
-rcpp plan resume <run-id>
-rcpp router explain <run-id>
-rcpp router stats
+## Architecture
+
+```mermaid
+flowchart LR
+    U["CLI request"] --> O["Task Orchestration"]
+    O --> P["Environment Perception"]
+    P --> S["Suitability Assessment"]
+    S --> M["Multi-Scenario Evaluation"]
+    M --> D["Phased Decision-Making"]
+    D --> R["Outcome Review"]
+    R -->|revise weights| M
+    R -->|approved| X["Phased RCP plan"]
+
+    E[("Street view · POI · OD · Grid")] --> P
+    G[("Neo4j long-term memory")] <--> P
+    G <--> S
+    C[("LangGraph checkpoints")] <--> O
 ```
 
-`--instruction "..."` is an optional CLI path that invokes the configured
-`general_reasoning` provider. Structured arguments are preferred for reproducibility.
-The former standalone Python script entrypoint has been removed; use `rcpp` for all
-runtime operations.
+Multimodal evidence passes through five planning stages. Review results can trigger another scenario-weighting iteration.
 
-## Memory-Aware Dynamic Routing
+The workflow consists of five stages:
 
-The production memory extractors remain the evaluated Qwen2.5 LoRA deployments. Qwen3
-candidates are registered as Shadow deployments and are disabled when their model or
-adapter path is unavailable. Shadow output is written separately as `*.shadow.json`
-and is never merged into production memory.
+1. **Environment Perception** creates structured scene and semantic memory from visual and spatial evidence.
+2. **Suitability Assessment** checks candidate sites against physical, environmental, grid, traffic, and regulatory constraints.
+3. **Multi-Scenario Evaluation** calculates scenario-specific weights with MCDA and AHP.
+4. **Phased Decision-Making** turns candidate scores into a multi-year deployment plan.
+5. **Outcome Review** evaluates the plan and either accepts it or requests another weighting iteration.
 
-The policy-driven router evaluates task modality, memory lifecycle, memory quality,
-risk, and candidate readiness at runtime. It can reuse fresh memory, infer only missing
-fields, refresh stale or conflicted records, or escalate failed Scene tasks for human
-review. A fresh memory with quality at least 0.9 can bypass model inference, and Scene
-failures never fall through to a text-only model.
+SQLite stores workflow checkpoints for resuming interrupted runs. Neo4j stores long-term planning memory. Run manifests and route traces record model and policy decisions.
 
-The `general_reasoning` model is an optional Provider-neutral dependency. Configure the
-selected Provider, model identifier, and corresponding API key in `configs/.env`:
+## Why RCPP-Agent?
+
+| Concern | RCPP-Agent approach |
+| --- | --- |
+| Planning output | Scenario-specific, multi-year deployment plans |
+| Repeated inference | Versioned memory is reused while its evidence remains valid |
+| Traceability | Routing decisions and run manifests are recorded |
+| Review | Review metrics can trigger another weighting iteration |
+| Modality safety | Failed scene inference is not passed to a text-only fallback |
+
+## Core Components
+
+### 🧠 Long-term memory
+
+Every roadside parking space can hold two independently versioned memories:
+
+- **SceneMemory:** occupancy, obstacles, clearance, visual evidence, and model metadata.
+- **SemanticMemory:** deterministic urban-context labels and an evidence-grounded summary.
+
+Memory that passes freshness and quality checks can be reused without another model call. Partial or stale records are refreshed. Conflicted scene records are flagged instead of being passed to a text-only model.
+
+### 🔀 Model routing
+
+The router evaluates task modality, memory lifecycle, quality, request risk, and model readiness. It can:
+
+- reuse validated memory
+- infer only missing fields
+- refresh stale or conflicted records
+- request human review for unsafe scene failures
+
+Every decision is written to `route.json`.
+
+### 📍 Scenario planning
+
+RCPP-Agent supports three explicit planning perspectives:
+
+| Scenario | Planning emphasis |
+| --- | --- |
+| `efficiency_oriented` | Prioritize high-value sites and deployment efficiency. |
+| `equity_oriented` | Prioritize coverage and spatial accessibility. |
+| `balance_oriented` | Balance technical, economic, social, traffic, and policy objectives. |
+
+Each plan is divided into initiation, scale-up, and refinement phases.
+
+## Configuration
+
+Create `configs/.env` for secrets and machine-specific paths. Do not commit this file.
 
 ```dotenv
+# Workspace and study-area data
+RCPPAGENT_WORKSPACE=/absolute/path/to/RCPP-Agent
+RCPPAGENT_RAW_DATA_BASE=/absolute/path/to/study-area
+
+# Neo4j long-term memory
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=change-me
+NEO4J_DATABASE=neo4j
+
+# Optional general-reasoning provider
 RCPP_GENERAL_PROVIDER=<provider>
 RCPP_GENERAL_MODEL=<model-id>
 <PROVIDER>_API_KEY=<api-key>
 ```
 
-API keys are isolated by Provider and are only supplied to the selected LLM service.
+Provider keys are passed only to the selected service. Natural-language instructions and LLM-generated AHP weights require a configured provider. Structured planning arguments do not.
 
-## Versioned Scene and Semantic Memory
+- Model registry: [`rcpp_core/model_registry.py`](rcpp_core/model_registry.py)
+- Data and workspace paths: [`configs/data_config.py`](configs/data_config.py)
+- Runtime graph: [`rcpp_core/runtime.py`](rcpp_core/runtime.py)
 
-The perception layer keeps two independently versioned memories per RPS:
+## Outputs & Reproducibility
 
-- `SceneMemory`: red-boxed stall occupancy, obstacles, clearance, visual evidence, and model metadata.
-- `SemanticMemory`: deterministic urban-context labels plus an evidence-grounded language summary.
+Each run is stored under `.rcpp/runs/<run-id>/`:
 
-Neo4j retains the legacy `GlobalSceneSemanticMemory` aggregate for LangGraph compatibility and also writes normalized `RPS`, `SceneMemory`, and `SemanticMemory` nodes. Each version stores the base model, adapter version, schema version, generation time, quality score, evidence source, lifecycle status, and optional expiry. New versions retain `SUPERSEDES` links to prior versions.
+```text
+<run-id>/
+├── manifest.json         # input, status, timestamps, and final result
+├── route.json            # memory state and routing decisions
+└── result.json           # completed planning output
+```
 
-Model selection is centralized in `rcpp_core/model_registry.py`. The currently validated
-models remain production defaults; unvalidated candidates stay disabled or run only in
-Shadow mode. A text-only model is never used as a visual fallback, and invalid Scene
-outputs are marked for human review.
-Semantic failures always retain a deterministic safe summary. To let the optional
-general Provider rewrite only explanatory strings, set
-`RCPP_SEMANTIC_REPAIR_WITH_GENERAL=true`; repaired output is accepted only after the
-same rule-consistency checks.
-
-## OpenSpec
-
-The behavior-level change specifications live under `openspec/changes/`:
-
-- `cli-only-runtime`
-- `memory-lifecycle-and-retrieval`
-- `memory-aware-cascade-router`
-
-Each proposal contains design constraints, testable requirements, and task status.
-Planned work is left unchecked so documentation does not present it as implemented.
+Planning stages also export geospatial and evaluation artifacts under `output/`. Neo4j retains normalized `RPS`, `SceneMemory`, and `SemanticMemory` nodes with model, adapter, schema, quality, evidence, lifecycle, and supersession metadata.
 
 ## Project Structure
 
-```
+```text
 RCPP-Agent/
-├── configs/
-│   ├── config.py               # Multi-agent configurations
-│   └── data_config.py          # Data configurations
-├── rcpp_core/
-│   ├── prompts.py              # Prompt templates for agents
-│   ├── model_registry.py       # Versioned model pool and selection policy
-│   ├── semantic_rules.py       # Deterministic semantic labels and evidence
-│   ├── memory_schema.py        # Validation and memory metadata
-│   ├── memory_lifecycle.py     # Active, expired, conflicted, and superseded states
-│   ├── routing.py              # Memory-aware model routing policy
-│   ├── runtime.py              # LangGraph workflow runtime used by the CLI
-│   ├── scene_semantic_inference.py   # Multimodal inference glue
-│   ├── build_scene_semantic_memory.py  # Neo4j load, merge, save helpers
-│   └── neo4j_scene_semantic_store.py   # LangGraph store on Neo4j
-├── src/
-│   ├── task_orchestration_agent.py   # Top orchestrator
-│   ├── environment_perception_agent.py   # scene-semantic memory construction
-│   ├── suitability_assessment_agent.py   # RCP suitability scoring
-│   ├── multi_scenario_evaluation_agent.py   # Scenario weights via LLM-AHP
-│   ├── phased_decision_making_agent.py   # Phased strategy and candidate scores
-│   └── review_agent.py         # Plan review and readjust signal
-├── tools/
-│   ├── base.py / registry.py   # Tool base class and registration
-│   ├── llm_ahp_tool.py         # LLM-AHP subgraph
-│   ├── rcpp_paths.py           # Workspace path helpers
-│   ├── data_flow_tool/         # SpatiaLite ingest
-│   ├── memory_construction_tool/   # Perception pipeline tools
-│   ├── multi_scenario_evaluation_tool/   # MCDA calculators
-│   └── review_tool/            # Review metrics tools
-├── training/                    # Reserved model experiment utilities
-├── evaluation/                  # Model evaluation and promotion utilities
-├── rcpp_cli/                    # Public CLI entrypoint and subcommands
-├── openspec/                    # Behavior specs and implementation checklists
-└── tests/                       # Rule, schema, routing, split, compatibility tests
+├── configs/              # runtime, provider, data, and path configuration
+├── rcpp_cli/             # public rcpp command-line interface
+├── rcpp_core/            # runtime, routing, memory, schemas, and model registry
+├── src/                  # supervisor and specialized planning agents
+├── tools/                # spatial ingest, MCDA, memory, and review tools
+├── evaluation/           # offline metrics and model evaluation
+├── training/             # dataset preparation and experiment utilities
+├── openspec/             # behavior specifications and checklists
+└── tests/                # CLI, routing, memory, evaluation, and compatibility tests
 ```
 
-## Changelog
 
-### 2026-09-20 v1.1
+## Citation
 
-1. Added the `rcpp` CLI as the only supported runtime entrypoint, with run manifests, status inspection, and checkpoint resume.
-2. Added independently versioned Scene and Semantic memories with lifecycle states, quality gates, expiry handling, and Neo4j `SUPERSEDES` relationships.
-3. Added policy-driven memory-aware dynamic routing for memory reuse, incremental inference, conflict refresh, validation fallback, and human review.
-4. Added Provider-neutral LLM configuration, credential isolation, and production-safe Shadow model execution.
-5. Added OpenSpec change specifications, regression tests, offline evaluation utilities, and model promotion gates.
-6. Moved the LangGraph workflow runtime from `src/rcpp_agent.py` to `rcpp_core/runtime.py` and updated the project documentation.
+Publication details and a machine-readable `CITATION.cff` will be added when they are available.
 
-### 2026-04-22 v1.0
+## Contributing
 
-1. Created the RCPP-Agent.
+Issues and pull requests are welcome. For substantial changes, describe the affected planning assumption, data contract, or behavior before implementation.
