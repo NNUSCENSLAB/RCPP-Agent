@@ -12,7 +12,7 @@
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-1.1.0-6f42c1" alt="Version 1.1.0"></a>
 </p>
 
-[What is RCPP-Agent?](#what-is-rcpp-agent) · [Quick Start](#quick-start) · [Architecture](#architecture) · [Why RCPP-Agent?](#why-rcpp-agent)
+[What is RCPP-Agent?](#what-is-rcpp-agent) · [Why RCPP-Agent?](#why-rcpp-agent) · [Architecture](#architecture) · [Quick Start](#quick-start)
 
 </div>
 
@@ -24,6 +24,36 @@
 
 The workflow uses LangGraph to coordinate perception, suitability assessment, scenario evaluation, phased planning, and outcome review. Each stage records its evidence and intermediate state. This makes interrupted runs resumable and the resulting plans easier to inspect.
 
+## Why RCPP-Agent?
+
+| Concern | RCPP-Agent approach |
+| --- | --- |
+| Planning output | Scenario-specific, multi-year deployment plans |
+| Repeated inference | Versioned memory is reused while its evidence remains valid |
+| Traceability | Routing decisions and run manifests are recorded |
+| Review | Review metrics can trigger another weighting iteration |
+| Modality safety | Failed scene inference is not passed to a text-only fallback |
+
+## Architecture
+
+<p align="center">
+  <img src="docs/assets/rcpp-agent-architecture.jpg" alt="RCPP-Agent architecture showing urban evidence, task orchestration, environment perception, suitability assessment, multi-scenario evaluation, phased decision-making, and review feedback." width="100%">
+</p>
+
+Multimodal evidence passes through five planning stages. Review results can trigger another scenario-weighting iteration.
+
+The workflow consists of five stages:
+
+1. **Environment Perception** creates structured scene and semantic memory from visual and spatial evidence.
+2. **Suitability Assessment** checks candidate sites against physical, environmental, grid, traffic, and regulatory constraints.
+3. **Multi-Scenario Evaluation** calculates scenario-specific weights with MCDA and AHP.
+4. **Phased Decision-Making** turns candidate scores into a multi-year deployment plan.
+5. **Outcome Review** evaluates the plan and either accepts it or requests another weighting iteration.
+
+SQLite stores workflow checkpoints for resuming interrupted runs. Neo4j stores long-term planning memory. Run manifests and route traces record model and policy decisions.
+
+## Quick Start
+
 ### Where to start
 
 | Task | Command | Requirements |
@@ -32,11 +62,6 @@ The workflow uses LangGraph to coordinate perception, suitability assessment, sc
 | Inspect existing memory | `rcpp memory inspect <path>` | Scene-semantic memory JSON |
 | Run a reproducible district plan | `rcpp data import` → `rcpp plan run` | Study-area data, SpatiaLite, Neo4j, local models |
 | Use natural-language instructions | `rcpp plan run --instruction "..."` | Configured reasoning provider |
-
-> [!NOTE]
-> Full district runs require local data and model assets. Cloud LLM features are optional.
-
-## Quick Start
 
 ### 1. Install
 
@@ -119,34 +144,6 @@ rcpp plan run \
 ```
 
 Structured arguments with `cached` weights are the default reproducible path and do not require a cloud LLM API.
-
-## Architecture
-
-<p align="center">
-  <img src="docs/assets/rcpp-agent-architecture.jpg" alt="RCPP-Agent architecture showing urban evidence, task orchestration, environment perception, suitability assessment, multi-scenario evaluation, phased decision-making, and review feedback." width="100%">
-</p>
-
-Multimodal evidence passes through five planning stages. Review results can trigger another scenario-weighting iteration.
-
-The workflow consists of five stages:
-
-1. **Environment Perception** creates structured scene and semantic memory from visual and spatial evidence.
-2. **Suitability Assessment** checks candidate sites against physical, environmental, grid, traffic, and regulatory constraints.
-3. **Multi-Scenario Evaluation** calculates scenario-specific weights with MCDA and AHP.
-4. **Phased Decision-Making** turns candidate scores into a multi-year deployment plan.
-5. **Outcome Review** evaluates the plan and either accepts it or requests another weighting iteration.
-
-SQLite stores workflow checkpoints for resuming interrupted runs. Neo4j stores long-term planning memory. Run manifests and route traces record model and policy decisions.
-
-## Why RCPP-Agent?
-
-| Concern | RCPP-Agent approach |
-| --- | --- |
-| Planning output | Scenario-specific, multi-year deployment plans |
-| Repeated inference | Versioned memory is reused while its evidence remains valid |
-| Traceability | Routing decisions and run manifests are recorded |
-| Review | Review metrics can trigger another weighting iteration |
-| Modality safety | Failed scene inference is not passed to a text-only fallback |
 
 ## Core Components
 
