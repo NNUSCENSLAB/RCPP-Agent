@@ -122,70 +122,9 @@ Structured arguments with `cached` weights are the default reproducible path and
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph INTERFACE["Interface Layer"]
-        CLI["RCPP CLI"]
-    end
-
-    subgraph ORCHESTRATION["Orchestration & State Layer"]
-        SUP["Task Orchestration / Supervisor"]
-        STATE[("LangGraph State & Checkpoints")]
-        SUP <--> STATE
-    end
-
-    subgraph WORKFLOW["Domain Agent Workflow"]
-        EP["Environment Perception"] --> SA["Suitability Assessment"]
-        SA --> ME["Multi-Scenario Evaluation"]
-        ME --> PD["Phased Decision-Making"]
-        PD --> RV["Outcome Review"]
-        RV -->|revise weights| ME
-    end
-
-    subgraph INTELLIGENCE["Memory-Aware Intelligence"]
-        ROUTER["Memory-Aware Model Router"]
-        PROD["Validated Models"]
-        CANDIDATE["Isolated Candidate Evaluation"]
-        RULES["Deterministic Rules & Validators"]
-        ROUTER --> PROD
-        ROUTER -.-> CANDIDATE
-        ROUTER --> RULES
-    end
-
-    subgraph MEMORY["Scene–Semantic Graph Memory"]
-        RPS["Roadside Parking Space"]
-        SCENE["Scene Memory<br/>physical evidence"]
-        SEMANTIC["Semantic Memory<br/>urban context"]
-        RPS --> SCENE
-        SCENE -->|physical conditions pass| SEMANTIC
-    end
-
-    subgraph DATA["Data & Tool Layer"]
-        SOURCES[("Street View · POI · OD · Grid")]
-        TOOLS["Spatial · MCDA · Review Tools"]
-        SOURCES --> TOOLS
-    end
-
-    subgraph GOVERNANCE["Evaluation & Governance"]
-        EVAL["Offline Evals & Promotion Gates"]
-        SPEC["OpenSpec & Regression Tests"]
-        TRACE["Run Manifests & Route Traces"]
-    end
-
-    CLI --> SUP --> EP
-    EP <--> ROUTER
-    EP <--> RPS
-    SA <--> RPS
-    TOOLS --> EP
-    TOOLS --> SA
-    TOOLS --> ME
-    TOOLS --> PD
-    PD -->|planning annotations| RPS
-    RV -->|approved| OUT["Phased RCP Plan"]
-    EVAL -.-> ROUTER
-    SPEC -.-> SUP
-    SUP -.-> TRACE
-```
+<p align="center">
+  <img src="docs/assets/rcpp-agent-architecture.jpg" alt="RCPP-Agent architecture showing urban evidence, task orchestration, environment perception, suitability assessment, multi-scenario evaluation, phased decision-making, and review feedback." width="100%">
+</p>
 
 Multimodal evidence passes through five planning stages. Review results can trigger another scenario-weighting iteration.
 
@@ -295,6 +234,7 @@ RCPP-Agent/
 ├── evaluation/           # offline metrics and model evaluation
 ├── training/             # dataset preparation and experiment utilities
 ├── openspec/             # behavior specifications and checklists
+├── docs/assets/          # README architecture and visual assets
 └── tests/                # CLI, routing, memory, evaluation, and compatibility tests
 ```
 
