@@ -12,7 +12,7 @@
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-1.1.0-6f42c1" alt="Version 1.1.0"></a>
 </p>
 
-[What is RCPP-Agent?](#what-is-rcpp-agent) · [Why RCPP-Agent?](#why-rcpp-agent) · [Architecture](#architecture) · [Quick Start](#quick-start)
+[What is RCPP-Agent?](#what-is-rcpp-agent) · [Why RCPP-Agent?](#why-rcpp-agent) · [Architecture](#architecture) · [Core Components](#core-components) · [Quick Start](#quick-start)
 
 </div>
 
@@ -51,6 +51,40 @@ The workflow consists of five stages:
 5. **Outcome Review** evaluates the plan and either accepts it or requests another weighting iteration.
 
 SQLite stores workflow checkpoints for resuming interrupted runs. Neo4j stores long-term planning memory. Run manifests and route traces record model and policy decisions.
+
+## Core Components
+
+### 🧠 Long-term memory
+
+Every roadside parking space can hold two independently versioned memories:
+
+- **SceneMemory:** occupancy, obstacles, clearance, visual evidence, and model metadata.
+- **SemanticMemory:** deterministic urban-context labels and an evidence-grounded summary.
+
+Memory that passes freshness and quality checks can be reused without another model call. Partial or stale records are refreshed. Conflicted scene records are flagged instead of being passed to a text-only model.
+
+### 🔀 Model routing
+
+The router evaluates task modality, memory lifecycle, quality, request risk, and model readiness. It can:
+
+- reuse validated memory
+- infer only missing fields
+- refresh stale or conflicted records
+- request human review for unsafe scene failures
+
+Every decision is written to `route.json`.
+
+### 📍 Scenario planning
+
+RCPP-Agent supports three explicit planning perspectives:
+
+| Scenario | Planning emphasis |
+| --- | --- |
+| `efficiency_oriented` | Prioritize high-value sites and deployment efficiency. |
+| `equity_oriented` | Prioritize coverage and spatial accessibility. |
+| `balance_oriented` | Balance technical, economic, social, traffic, and policy objectives. |
+
+Each plan is divided into initiation, scale-up, and refinement phases.
 
 ## Quick Start
 
@@ -144,40 +178,6 @@ rcpp plan run \
 ```
 
 Structured arguments with `cached` weights are the default reproducible path and do not require a cloud LLM API.
-
-## Core Components
-
-### 🧠 Long-term memory
-
-Every roadside parking space can hold two independently versioned memories:
-
-- **SceneMemory:** occupancy, obstacles, clearance, visual evidence, and model metadata.
-- **SemanticMemory:** deterministic urban-context labels and an evidence-grounded summary.
-
-Memory that passes freshness and quality checks can be reused without another model call. Partial or stale records are refreshed. Conflicted scene records are flagged instead of being passed to a text-only model.
-
-### 🔀 Model routing
-
-The router evaluates task modality, memory lifecycle, quality, request risk, and model readiness. It can:
-
-- reuse validated memory
-- infer only missing fields
-- refresh stale or conflicted records
-- request human review for unsafe scene failures
-
-Every decision is written to `route.json`.
-
-### 📍 Scenario planning
-
-RCPP-Agent supports three explicit planning perspectives:
-
-| Scenario | Planning emphasis |
-| --- | --- |
-| `efficiency_oriented` | Prioritize high-value sites and deployment efficiency. |
-| `equity_oriented` | Prioritize coverage and spatial accessibility. |
-| `balance_oriented` | Balance technical, economic, social, traffic, and policy objectives. |
-
-Each plan is divided into initiation, scale-up, and refinement phases.
 
 ## Configuration
 
