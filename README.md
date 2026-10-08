@@ -123,20 +123,68 @@ Structured arguments with `cached` weights are the default reproducible path and
 ## Architecture
 
 ```mermaid
-flowchart LR
-    U["CLI request"] --> O["Task Orchestration"]
-    O --> P["Environment Perception"]
-    P --> S["Suitability Assessment"]
-    S --> M["Multi-Scenario Evaluation"]
-    M --> D["Phased Decision-Making"]
-    D --> R["Outcome Review"]
-    R -->|revise weights| M
-    R -->|approved| X["Phased RCP plan"]
+flowchart TB
+    subgraph INTERFACE["Interface Layer"]
+        CLI["RCPP CLI"]
+    end
 
-    E[("Street view · POI · OD · Grid")] --> P
-    G[("Neo4j long-term memory")] <--> P
-    G <--> S
-    C[("LangGraph checkpoints")] <--> O
+    subgraph ORCHESTRATION["Orchestration & State Layer"]
+        SUP["Task Orchestration / Supervisor"]
+        STATE[("LangGraph State & Checkpoints")]
+        SUP <--> STATE
+    end
+
+    subgraph WORKFLOW["Domain Agent Workflow"]
+        EP["Environment Perception"] --> SA["Suitability Assessment"]
+        SA --> ME["Multi-Scenario Evaluation"]
+        ME --> PD["Phased Decision-Making"]
+        PD --> RV["Outcome Review"]
+        RV -->|revise weights| ME
+    end
+
+    subgraph INTELLIGENCE["Memory-Aware Intelligence"]
+        ROUTER["Memory-Aware Model Router"]
+        PROD["Validated Models"]
+        CANDIDATE["Isolated Candidate Evaluation"]
+        RULES["Deterministic Rules & Validators"]
+        ROUTER --> PROD
+        ROUTER -.-> CANDIDATE
+        ROUTER --> RULES
+    end
+
+    subgraph MEMORY["Scene–Semantic Graph Memory"]
+        RPS["Roadside Parking Space"]
+        SCENE["Scene Memory<br/>physical evidence"]
+        SEMANTIC["Semantic Memory<br/>urban context"]
+        RPS --> SCENE
+        SCENE -->|physical conditions pass| SEMANTIC
+    end
+
+    subgraph DATA["Data & Tool Layer"]
+        SOURCES[("Street View · POI · OD · Grid")]
+        TOOLS["Spatial · MCDA · Review Tools"]
+        SOURCES --> TOOLS
+    end
+
+    subgraph GOVERNANCE["Evaluation & Governance"]
+        EVAL["Offline Evals & Promotion Gates"]
+        SPEC["OpenSpec & Regression Tests"]
+        TRACE["Run Manifests & Route Traces"]
+    end
+
+    CLI --> SUP --> EP
+    EP <--> ROUTER
+    EP <--> RPS
+    SA <--> RPS
+    TOOLS --> EP
+    TOOLS --> SA
+    TOOLS --> ME
+    TOOLS --> PD
+    PD -->|planning annotations| RPS
+    RV -->|approved| OUT["Phased RCP Plan"]
+    EVAL -.-> ROUTER
+    SPEC -.-> SUP
+    SUP -.-> TRACE
 ```
 
 Multimodal evidence passes through five planning stages. Review results can trigger another scenario-weighting iteration.
