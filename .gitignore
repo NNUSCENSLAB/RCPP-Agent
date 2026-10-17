@@ -1,5 +1,6 @@
 configs/.env
 .venv/
+.venv-runtime/
 venv/
 __pycache__/
 *.py[cod]
@@ -11,6 +12,7 @@ __pycache__/
 artifacts/
 outputs/
 output/
+evaluation/results/
 data/
 models/
 *.sqlite
@@ -23,3 +25,6 @@ models/
 *.ckpt
 .idea/
 .vscode/
+/docs/runtime-reliability.md
+/RCPP-Agent.md
+/RCPP-Agent项目面试逐字稿.md

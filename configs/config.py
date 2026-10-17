@@ -4,6 +4,7 @@ This module contains all configuration settings for the project.
 """
 from __future__ import annotations
 import os
+from pathlib import Path
 from enum import Enum
 from typing import Dict, Optional
 from configs.data_config import DEFAULT_WORKSPACE
@@ -14,6 +15,28 @@ VERSION = "1.1.0"
 
 ENV_DEEPSEEK_API_KEY = "DEEPSEEK_API_KEY"
 ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
+ENV_SILICONFLOW_API_KEY = "SILICONFLOW_API_KEY"
+
+
+def load_local_env(path: str | Path = "configs/.env") -> None:
+    """Load local credentials without overriding process environment values."""
+    source = Path(path)
+    if not source.exists():
+        return
+    for raw_line in source.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if value[:1] == value[-1:] and value[:1] in {"'", '"'}:
+            value = value[1:-1]
+        if name:
+            os.environ.setdefault(name, value)
+
+
+load_local_env()
 
 ENV_INSTRUCTION_PARSE_MODEL = "INSTRUCTION_PARSE_MODEL"
 DEFAULT_INSTRUCTION_PARSE_MODEL = "deepseek-chat"
@@ -27,6 +50,8 @@ def get_provider_api_key(provider: str) -> Optional[str]:
         return os.getenv(ENV_DEEPSEEK_API_KEY) or None
     if normalized == "openai":
         return os.getenv(ENV_OPENAI_API_KEY) or None
+    if normalized == "siliconflow":
+        return os.getenv(ENV_SILICONFLOW_API_KEY) or None
     env_name = f"{normalized.upper()}_API_KEY"
     return os.getenv(env_name) or None
 

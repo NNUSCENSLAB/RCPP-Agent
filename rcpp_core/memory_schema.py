@@ -37,6 +37,9 @@ def validate_scene_memory(memory: Mapping[str, Any]) -> list[str]:
     if not isinstance(score, (int, float)) or isinstance(score, bool) or not 1 <= score <= 5:
         errors.append("confidence_score must be between 1 and 5")
     obstacle = memory.get("has_ground_obstacle")
+    for name in ("has_existing_RCP", "is_functional_zone", "has_ground_obstacle", "clearance_visual_assessment"):
+        if name in memory and not isinstance(memory.get(name), bool):
+            errors.append(f"{name} must be a boolean")
     if obstacle is False and count not in (0, None):
         errors.append("has_ground_obstacle=false requires ground_obstacle_count=0")
     if obstacle is True and count == 0:
@@ -56,12 +59,18 @@ def validate_semantic_memory(memory: Mapping[str, Any]) -> list[str]:
 
 
 def quality_score(kind: str, errors: list[str], memory: Mapping[str, Any]) -> float:
-    if errors:
-        return max(0.0, round(1.0 - 0.2 * len(errors), 3))
+    """Compute evidence quality without using the legacy fixed confidence score."""
+    required = SCENE_REQUIRED_FIELDS if kind == "scene" else SEMANTIC_REQUIRED_FIELDS
+    # confidence_score is retained for provenance, but carries no quality signal.
+    scored_required = required - ({"confidence_score"} if kind == "scene" else set())
+    completeness = sum(memory.get(name) is not None for name in scored_required) / max(1, len(scored_required))
+    consistency = max(0.0, 1.0 - 0.2 * len(errors))
     if kind == "scene":
-        confidence = float(memory.get("confidence_score", 3))
-        return round(min(1.0, max(0.0, confidence / 5.0)), 3)
-    return 1.0
+        image_mapping = 1.0 if memory.get("source_image") or memory.get("evidence_source") else 0.5
+        evidence = 1.0 if memory.get("scene_reasoning") else 0.5
+        return round(0.4 * completeness + 0.3 * consistency + 0.15 * image_mapping + 0.15 * evidence, 3)
+    evidence = 1.0 if memory.get("raw_text") or memory.get("evidence_source") else 0.5
+    return round(0.55 * completeness + 0.3 * consistency + 0.15 * evidence, 3)
 
 
 def build_memory_metadata(

@@ -1,203 +1,172 @@
-"""
-Environment Perception Agent: extracts environmental and semantic features around each RPS
-and builds merged scene-semantic memory persisted through the long-term store.
-"""
+"""Scene→Semantic retrieval with durable per-RPS refresh receipts."""
+from __future__ import annotations
 
+from dataclasses import asdict
 import json
-import logging
-import os
-import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+import os
+from typing import Any, Callable, Dict, Mapping, Optional
 
-from langgraph.store.base import BaseStore
-
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-from configs.data_config import (
-    DEFAULT_WORKSPACE,
-    path_default_scene_semantic_memory_json,
-    path_output_environment_perception_agent,
-)
-from rcpp_core.build_scene_semantic_memory import (
-    load_scene_semantic_memory_json_file,
-    merge_scene_semantic_memory,
-    resolve_scene_semantic_memory_json_path,
-)
-from rcpp_core.neo4j_scene_semantic_store import (
-    SCENE_SEMANTIC_KEY_GLOBAL,
-    area_slug_from_spatialite_context,
-    scene_semantic_namespace,
-)
-from rcpp_core.memory_lifecycle import reusable
-from tools.memory_construction_tool.perception_pipeline import PerceptionPipeline
-
-logger = logging.getLogger(__name__)
-
-
-def _find_scene_semantic_memory_json(data_root: Path) -> Optional[Path]:
-    """
-    First ``*.json`` directly under *data_root* whose filename contains scene, semantic, and memory
-    (case-insensitive; no fixed naming pattern).
-    """
-    if not data_root.is_dir():
-        return None
-
-    def matches(p: Path) -> bool:
-        if not p.is_file() or p.suffix.lower() != ".json":
-            return False
-        n = p.name.lower()
-        return "scene" in n and "semantic" in n and "memory" in n
-
-    found = sorted(p for p in data_root.iterdir() if matches(p))
-    return found[0] if found else None
+from configs.data_config import DEFAULT_WORKSPACE, path_output_environment_perception_agent
+from rcpp_core.execution_journal import ExecutionJournal, file_fingerprint, fingerprint, run_directory
+from rcpp_core.graph_memory_repository import GraphMemoryRepository, assess_scene, assess_semantic
+from rcpp_core.memory_refresh import TargetedMemoryRefresher
+from rcpp_core.model_registry import get_deployment
+from rcpp_core.routing import MemoryAwareRouter, RoutingContext
 
 
 class EnvironmentPerceptionAgent:
-    def __init__(
-        self,
-        workspace_dir: str = DEFAULT_WORKSPACE,
-        scene_base_model: Optional[str] = None,
-        scene_adapter_path: Optional[str] = None,
-        semantic_base_model: Optional[str] = None,
-        semantic_adapter_path: Optional[str] = None,
-    ):
-        self._pipeline = PerceptionPipeline(
-            workspace_dir=workspace_dir,
-            scene_base_model=scene_base_model,
-            scene_adapter_path=scene_adapter_path,
-            semantic_base_model=semantic_base_model,
-            semantic_adapter_path=semantic_adapter_path,
-        )
-
-    def process_from_spatialite(self, spatialite_context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Run the Environment Perception Agent pipeline: 
-        Input multi-source spatial data -> construct scene memory -> construct semantic memory ->
-        merge scene and semantic memory -> output scene-semantic memory.
-        """
-        print("Environment Perception Agent running...", flush=True)
-        db_path = spatialite_context.get("db_path")
-        area = spatialite_context.get("area")
-        logger.info(
-            "Environment Perception Agent running. db_path=%s area=%s scenario=%s time_horizon=%s",
-            db_path,
-            area,
-            spatialite_context.get("scenario"),
-            spatialite_context.get("time_horizon"),
-        )
-
-        if not db_path or not os.path.exists(db_path):
-            raise FileNotFoundError(f"SpatiaLite database file not found: {db_path}")
-
-        result = self._pipeline.run(spatialite_context)
-        n = len(result) if isinstance(result, dict) else 0
-        print(
-            f"[Environment Perception] Pipeline finished. Loaded {n} scene-semantic memory.",
-            flush=True,
-        )
-        return result
-
-    def perceive(
-        self,
-        spatialite_context: Dict[str, Any],
-        global_instruction: Dict[str, Any],
-        *,
-        store: BaseStore,
-    ) -> Dict[str, Any]:
-        """
-        Graph node entry: load scene-semantic memory.
-        """
-        if not spatialite_context:
-            raise ValueError("spatialite_context is required for Environment Perception.")
-
-        area_slug = area_slug_from_spatialite_context(spatialite_context)
-        ns = scene_semantic_namespace(area_slug)
-        gi = global_instruction or {}
-        raw_json = gi.get("scene_semantic_memory_json_path") or (
-            spatialite_context or {}
-        ).get("scene_semantic_memory_json_path")
-        workspace_for_resolve = gi.get("workspace_dir") or spatialite_context.get("workspace_dir")
-
-        prior_item = store.get(ns, SCENE_SEMANTIC_KEY_GLOBAL)
-        prior: Dict[str, Any] = (
-            dict(prior_item.value)
-            if prior_item is not None and isinstance(prior_item.value, dict)
-            else {}
-        )
-        if prior:
-            logger.info(
-                "Loaded global scene-semantic memory from store for area=%s (%s RPS keys).",
-                area_slug,
-                len(prior),
-            )
-
-        def prior_is_reusable() -> bool:
-            if not prior:
-                return False
-            for record in prior.values():
-                if not isinstance(record, dict):
-                    return False
-                node = record.get("memory_node")
-                if not isinstance(node, dict):
-                    return False
-                scene = node.get("scene_memory")
-                semantic = node.get("semantic_memory")
-                if not isinstance(scene, dict) or not isinstance(semantic, dict):
-                    return False
-                if not reusable(scene) or not reusable(semantic):
-                    return False
-            return True
-
-        json_path: Optional[Path] = None
-        if raw_json:
-            json_path = resolve_scene_semantic_memory_json_path(
-                str(raw_json),
-                workspace_for_resolve,
-            )
+    def __init__(self, workspace_dir: str = DEFAULT_WORKSPACE,
+                 scene_base_model: Optional[str] = None, scene_adapter_path: Optional[str] = None,
+                 semantic_base_model: Optional[str] = None, semantic_adapter_path: Optional[str] = None,
+                 scene_refresher: Optional[Callable] = None, semantic_refresher: Optional[Callable] = None,
+                 router: MemoryAwareRouter | None = None):
+        self.workspace_dir = workspace_dir
+        self.model_settings = dict(scene_base_model=scene_base_model, scene_adapter_path=scene_adapter_path,
+                                   semantic_base_model=semantic_base_model, semantic_adapter_path=semantic_adapter_path)
+        self.scene_refresher = scene_refresher
+        self.semantic_refresher = semantic_refresher
+        self.targeted_refresher = TargetedMemoryRefresher(**self.model_settings)
+        if router is None and any(value is not None for value in self.model_settings.values()):
+            # Profiles must match the weights actually requested by explicit overrides.
+            deployments = {}
+            for kind in ("scene", "semantic"):
+                deployment = get_deployment(kind,
+                    base_model=self.model_settings[f"{kind}_base_model"],
+                    adapter_path=self.model_settings[f"{kind}_adapter_path"])
+                deployments[deployment.key] = deployment
+            self.router = MemoryAwareRouter(registry=deployments)
         else:
-            adr = spatialite_context.get("area_data_root") or spatialite_context.get(
-                "district_data_root"
-            )
-            if adr:
-                json_path = _find_scene_semantic_memory_json(Path(str(adr)))
-            if json_path is None:
-                out_default = path_default_scene_semantic_memory_json(
-                    area_slug, workspace_for_resolve
+            self.router = router or MemoryAwareRouter()
+
+    def perceive(self, spatialite_context: Dict[str, Any], global_instruction: Dict[str, Any],
+                 *, repository: GraphMemoryRepository) -> Dict[str, Any]:
+        area = str(spatialite_context.get("area") or "").strip().lower()
+        if not area:
+            raise ValueError("spatialite_context['area'] is required")
+        if global_instruction.get("scene_semantic_memory_json_path"):
+            raise ValueError("Runtime JSON memory input is disabled; use rcpp memory migrate")
+        run_id = str(global_instruction.get("run_id") or "unknown")
+        journal = ExecutionJournal(run_directory(run_id) / "execution.sqlite")
+        excluded = set(global_instruction.get("excluded_rps") or [])
+        rps_rows = [r for r in repository.list_rps(area) if r["rps_id"] not in excluded]
+        if not rps_rows and not excluded:
+            raise ValueError(f"No graph RPS is available for area={area}; run rcpp memory migrate")
+        ids = [r["rps_id"] for r in rps_rows]
+        records, events = repository.load_progressive_context(area, ids) if ids else ({}, [])
+        # Fingerprints invalidate receipts after changing source data, model configuration or code.
+        root = Path(__file__).resolve().parents[1]
+        revision = {
+            "database": file_fingerprint(str(spatialite_context.get("db_path") or "")),
+            "database_wal": file_fingerprint(str(spatialite_context.get("db_path") or "") + "-wal"),
+            "context": spatialite_context,
+            "code": [file_fingerprint(root / p) for p in (
+                "rcpp_core/prompts.py", "rcpp_core/memory_refresh.py", "rcpp_core/semantic_rules.py",
+                "rcpp_core/scene_semantic_inference.py", "rcpp_core/memory_schema.py")],
+        }
+        input_revision = fingerprint(revision)
+        context = {**spatialite_context, "run_id": run_id, "input_revision": input_revision}
+        refresh_events = []
+        journal_hits = 0
+        row_by_id = {r["rps_id"]: r for r in rps_rows}
+        local_images = self.targeted_refresher.resolve_image_sources(spatialite_context)
+        targets_by_layer: dict[str, list[str]] = {}
+        for kind in ("scene", "semantic"):
+            targets = [e for e in events if e["layer"] == kind and e["action"] == f"refresh_{kind}"]
+            targets_by_layer[kind] = [e["rps_id"] for e in targets]
+            for event in targets:
+                rid = event["rps_id"]
+                route_context = RoutingContext(
+                    run_id, kind, memory_state=event["state"],
+                    request_risk=global_instruction.get("request_risk", "medium"),
+                    latency_budget_ms=global_instruction.get("latency_budget_ms"),
+                    cost_budget=global_instruction.get("cost_budget_usd"),
+                    shadow_enabled=os.getenv("RCPP_SHADOW_ENABLED", "false").lower() in {"true", "1", "yes"},
                 )
-                if out_default.is_file():
-                    json_path = out_default
+                route = self.router.decide(route_context)
+                refresh_events.append({"rps_id": rid, "layer": kind, "action": "route",
+                                       "context": asdict(route_context), "decision": route.to_dict()})
+                if route.action == "human_review":
+                    continue
+                worker_context = {**context, "model_key": route.production_model,
+                                  "rules_only": route.action == "rule_fallback",
+                                  "shadow_enabled": bool(route.shadow_model)}
+                deployment = (get_deployment(kind, route.production_model,
+                    base_model=self.model_settings.get(f"{kind}_base_model"),
+                    adapter_path=self.model_settings.get(f"{kind}_adapter_path"))
+                    if route.production_model else None)
+                source = row_by_id[rid]
+                image_paths = [local_images.get(Path(str(p).replace("\\", "/")).name, str(p))
+                               for p in source.get("source_images", [])] if kind == "scene" else []
+                images = [file_fingerprint(p) for p in image_paths]
 
-        if json_path is not None:
-            logger.info(
-                "Using scene_semantic_memory JSON: %s",
-                json_path,
-            )
-            fresh = load_scene_semantic_memory_json_file(json_path)
-        elif prior_is_reusable():
-            logger.info("Reusing active high-quality memory for area=%s; inference bypassed.", area_slug)
-            fresh = {}
-        else:
-            fresh = self.process_from_spatialite(spatialite_context)
+                def compute():
+                    try:
+                        callback = self.scene_refresher if kind == "scene" else self.semantic_refresher
+                        if callback:
+                            output = callback(area, [rid], worker_context)
+                        elif kind == "scene":
+                            output = self.targeted_refresher.refresh_scene(area, [rid], worker_context, rps_records=rps_rows)
+                        else:
+                            output = self.targeted_refresher.refresh_semantic(area, [rid], worker_context)
+                        memory = output.get(rid)
+                        if not memory:
+                            return {"error": "refresh returned no memory"}
+                        assessment = assess_scene(memory) if kind == "scene" else assess_semantic(memory)
+                        if assessment.state != "fresh":
+                            return {"error": "; ".join(assessment.reasons), "invalid_memory": memory}
+                        return {"memory": memory}
+                    except Exception as exc:
+                        return {"error": f"{type(exc).__name__}: {exc}"}
 
-        scene_semantic_memory = merge_scene_semantic_memory(prior, fresh)
-        store.put(ns, SCENE_SEMANTIC_KEY_GLOBAL, dict(scene_semantic_memory))
-        logger.info(
-            "Saved global scene_semantic_memory for area=%s (%s RPS keys).",
-            area_slug,
-            len(scene_semantic_memory),
-        )
+                # The extractor already performs its constrained JSON retry. Journal the complete
+                # per-RPS extraction so completed calls are not repeated after a graph-write crash.
+                outcome, cached, key = journal.execute(f"{area}/{kind}/{rid}", {
+                    "revision": input_revision, "source": source, "images": images,
+                    "model": asdict(deployment) if deployment else "deterministic_rules",
+                    "route": {"rules_only": worker_context["rules_only"]},
+                }, compute)
+                journal_hits += int(cached)
+                memory = outcome.get("memory")
+                if memory:
+                    meta = memory.get("_meta") or {}
+                    payload = {k: v for k, v in memory.items() if k != "_meta"}
+                    append = repository.append_scene_memory if kind == "scene" else repository.append_semantic_memory
+                    append(area, rid, payload, memory_id=f"runtime-{key}",
+                           base_model=meta.get("base_model") or (deployment.base_model if deployment else "deterministic_rules"),
+                           adapter_version=meta.get("adapter_version") or (deployment.adapter_version if deployment else "none"),
+                           evidence_source=meta.get("evidence_source") or f"runtime_{kind}_refresh",
+                           source_images=image_paths,
+                           generated_at=meta.get("generated_at"))
+                refresh_events.append({"rps_id": rid, "layer": kind, "action": "refresh_attempt",
+                                       "result": "written" if memory else "failed", "journal_reused": cached,
+                                       "execution_key": key, "reason": outcome.get("error", "")})
+            records, events = repository.load_progressive_context(area, ids) if ids else ({}, [])
 
-        ep_dir = path_output_environment_perception_agent()
-        ep_dir.mkdir(parents=True, exist_ok=True)
-        ep_json = ep_dir / f"scene_semantic_memory_{area_slug}.json"
-        try:
-            with ep_json.open("w", encoding="utf-8") as f:
-                json.dump(dict(scene_semantic_memory), f, ensure_ascii=False, indent=2)
-            logger.info("Wrote scene_semantic_memory JSON to %s", ep_json)
-        except OSError as exc:
-            logger.warning("Could not write scene_semantic_memory JSON (%s): %s", ep_json, exc)
-
-        return {"workflow_status": "perception_completed"}
+        pending = [e for e in events if e["layer"] == "scene" and e["action"] == "refresh_scene"]
+        for event in pending:
+            event["source_images"] = row_by_id[event["rps_id"]].get("source_images", [])
+            route = next((e["decision"] for e in reversed(refresh_events)
+                          if e["rps_id"] == event["rps_id"] and e["layer"] == "scene" and "decision" in e), None)
+            if route:
+                event["route_reasons"] = route["reasons"]
+        stop = [e for e in events if e["layer"] == "scene" and e["action"] == "stop"]
+        decisions = [{"area": area, "rps_id": e["rps_id"],
+                      "outcome": "manual_review_required" if e in pending else "physically_infeasible",
+                      "reason": "; ".join(e.get("reasons") or []),
+                      "rules": ["scene_memory_quality_gate" if e in pending else "scene_physical_deployment_conditions"],
+                      "fact_ids": [], "fact_kinds": ["scene"]} for e in pending + stop]
+        repository.append_decisions(run_id, decisions)
+        summary = {
+            "scene_reused": sum(e["layer"] == "scene" and e["state"] == "fresh" for e in events),
+            "scene_refresh": len(targets_by_layer["scene"]), "early_stopped": len(stop),
+            "semantic_reused": sum(e["layer"] == "semantic" and e["action"] == "reuse" for e in events),
+            "semantic_refresh": len(targets_by_layer["semantic"]), "manual_review": len(pending),
+            "execution_receipts_reused": journal_hits,
+        }
+        out = path_output_environment_perception_agent()
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"progressive_retrieval_{area}_{run_id}.json").write_text(
+            json.dumps({"events": refresh_events + events, "summary": summary}, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"workflow_status": "perception_completed", "retrieval_events": refresh_events + events,
+                "retrieval_summary": summary, "pending_scene_reviews": pending}

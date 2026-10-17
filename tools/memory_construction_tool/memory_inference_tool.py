@@ -42,6 +42,7 @@ class MemoryInferenceTool(BaseTool):
         semantic_adapter_path: Optional[str] = None,
         max_new_tokens: Optional[int] = None,
         max_length: Optional[int] = None,
+        shadow_enabled: Optional[bool] = None,
         **kwargs: Any,
     ) -> None:
         if kind == "scene":
@@ -79,7 +80,8 @@ class MemoryInferenceTool(BaseTool):
         else:
             raise ValueError(f"unknown kind: {kind}")
 
-        if _shadow_enabled():
+        run_shadow = _shadow_enabled() if shadow_enabled is None else shadow_enabled
+        if run_shadow:
             candidate = shadow_deployment(kind)
             if candidate is None or candidate.availability != "ready":
                 logger.info("Shadow %s inference skipped: candidate model is disabled.", kind)

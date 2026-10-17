@@ -63,16 +63,20 @@ Every roadside parking space can hold two independently versioned memories:
 
 Memory that passes freshness and quality checks can be reused without another model call. Partial or stale records are refreshed. Conflicted scene records are flagged instead of being passed to a text-only model.
 
+Scene→Semantic progressive retrieval checks physical deployment conditions before loading urban context. Neo4j stores the independently versioned memories, facts, source images, and decision evidence. Per-space execution receipts let interrupted refresh tasks reuse completed results.
+
 ### 🔀 Model routing
 
 The router evaluates task modality, memory lifecycle, quality, request risk, and model readiness. It can:
 
 - reuse validated memory
-- infer only missing fields
+- refresh incomplete memory layers
 - refresh stale or conflicted records
 - request human review for unsafe scene failures
 
 Every decision is written to `route.json`.
+
+With `--routing-profiles`, the router admits production models using approved measurements of quality, mean cost, and P95 latency. Profiles must match the deployed model and adapter. Set `--cost-budget-usd` and `--latency-budget-ms` to constrain selection; missing or infeasible profiles lead to Scene review or deterministic Semantic rules. These measurements guide selection and do not impose a hard billing or execution-time cap.
 
 ### 📍 Scenario planning
 
@@ -93,7 +97,7 @@ Each plan is divided into initiation, scale-up, and refinement phases.
 | Task | Command | Requirements |
 | --- | --- | --- |
 | Understand the routing policy | `rcpp router explain --kind scene --memory-state fresh --memory-quality 0.95` | Installed package only |
-| Inspect existing memory | `rcpp memory inspect <path>` | Scene-semantic memory JSON |
+| Inspect existing memory | `rcpp memory inspect --area <district_slug> --rps <parking-space-id>` | Migrated Neo4j memory |
 | Run a reproducible district plan | `rcpp data import` → `rcpp plan run` | Study-area data, SpatiaLite, Neo4j, local models |
 | Use natural-language instructions | `rcpp plan run --instruction "..."` | Configured reasoning provider |
 
@@ -179,6 +183,16 @@ rcpp plan run \
 
 Structured arguments with `cached` weights are the default reproducible path and do not require a cloud LLM API.
 
+Planning follows explicit LangGraph stage edges. If Scene refresh cannot produce valid evidence, the run pauses with status `awaiting_review`:
+
+```bash
+rcpp plan reviews <run-id>
+rcpp plan review <run-id> --file review.json
+rcpp plan resume <run-id>
+```
+
+The review submission identifies the reviewer, copies the pending `review_token`, and supplies one decision per pending parking space: `exclude` with a note, or `correct_scene` with a complete `scene_memory`, `source_images`, and a note. Accepted submissions resume the same checkpoint and recheck Scene conditions before Semantic retrieval. Checkpoints from the previous graph topology require the previous runtime or a new run ID.
+
 ## Configuration
 
 Create `configs/.env` for secrets and machine-specific paths. Do not commit this file.
@@ -214,6 +228,7 @@ Each run is stored under `.rcpp/runs/<run-id>/`:
 <run-id>/
 ├── manifest.json         # input, status, timestamps, and final result
 ├── route.json            # memory state and routing decisions
+├── execution.sqlite      # run-scoped per-space refresh receipts
 └── result.json           # completed planning output
 ```
 

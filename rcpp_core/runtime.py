@@ -7,13 +7,12 @@ weighting (MCDA), phased decision-making, Neo4j-backed memory update, and review
 
 from __future__ import annotations
 
-import copy
 import logging
 import sqlite3
 import sys
 import uuid
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Optional, TypedDict, cast
+from typing import Annotated, Any, Dict, List, Optional, TypedDict, cast, TYPE_CHECKING
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
@@ -29,38 +28,45 @@ from configs.data_config import (
     path_output_suitability_assessment_agent,
 )
 
-from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
 
 from tools.rcpp_paths import default_poi_dir
-from langgraph.store.base import BaseStore
-from rcpp_core.neo4j_scene_semantic_store import (
-    SCENE_SEMANTIC_KEY_GLOBAL,
-    Neo4jGlobalSceneSemanticStore,
-    area_slug_from_spatialite_context,
-    scene_semantic_namespace,
-)
-from src.task_orchestration_agent import TaskOrchestrationAgent
-from src.environment_perception_agent import EnvironmentPerceptionAgent
-from src.suitability_assessment_agent import (
-    SuitabilityAssessmentAgent,
-    export_suitability_shapefiles,
-    guess_rps_id_column,
-    load_rps_gdf_for_export,
-)
-from src.multi_scenario_evaluation_agent import MultiScenarioEvaluationAgent
-from src.phased_decision_making_agent import (
-    PhasedDecisionMakingAgent,
-    export_phase_rps_shapefile,
-    write_json_path,
-)
-from src.review_agent import ReviewAgent, write_review_metrics_json
+from rcpp_core.graph_memory_repository import GraphMemoryRepository
+from rcpp_core.execution_journal import exclusive_file, run_directory
+from rcpp_core.planning_workflow import WORKFLOW_VERSION, compile_planning_graph, make_human_review_node
+
+if TYPE_CHECKING:
+    from src.task_orchestration_agent import TaskOrchestrationAgent
+    from src.environment_perception_agent import EnvironmentPerceptionAgent
+    from src.suitability_assessment_agent import SuitabilityAssessmentAgent
+    from src.multi_scenario_evaluation_agent import MultiScenarioEvaluationAgent
+    from src.phased_decision_making_agent import PhasedDecisionMakingAgent
+    from src.review_agent import ReviewAgent
 
 logger = logging.getLogger(__name__)
 
 _MEMORY_EVENTS_CLEAR_SOURCE = "__memory_events_clear__"
 _PHASED_PRIORITY_SOURCE = "PhasedDecisionMakingAgent"
 _PHASED_PRIORITY_FIELD = "priority_score"
+
+
+def _area_slug(spatialite_context: Dict[str, Any]) -> str:
+    area = str((spatialite_context or {}).get("area") or "").strip().lower()
+    if not area:
+        raise ValueError("spatialite_context['area'] is required")
+    return area
+
+
+def _load_progressive_memory(repository: GraphMemoryRepository, area: str,
+                             excluded: List[str] | None = None) -> Dict[str, Any]:
+    ids = [r["rps_id"] for r in repository.list_rps(area) if r["rps_id"] not in set(excluded or [])]
+    if not ids:
+        return {}
+    memory, events = repository.load_progressive_context(area, ids)
+    ready = {event["rps_id"] for event in events
+             if event.get("layer") == "semantic" and event.get("action") == "reuse"}
+    return {rps_id: record for rps_id, record in memory.items() if rps_id in ready}
 
 # Memory update event schema
 class MemoryUpdateEvent(TypedDict):
@@ -127,6 +133,10 @@ class RCPPAgentState(TypedDict):
     # Suitability Assessment Agent
     suitable_rps: List[Dict[str, Any]]
     suitability_evaluations: List[Any]
+    retrieval_events: List[Dict[str, Any]]
+    retrieval_summary: Dict[str, int]
+    pending_scene_reviews: List[Dict[str, Any]]
+    workflow_version: int
 
     # Multi-Scenario Evaluation Agent
     scenario_mcda_weights: Dict[str, float]
@@ -163,6 +173,10 @@ class RCPPAgentStateUpdate(TypedDict, total=False):
     year: int
     suitable_rps: List[Dict[str, Any]]
     suitability_evaluations: List[Any]
+    retrieval_events: List[Dict[str, Any]]
+    retrieval_summary: Dict[str, int]
+    pending_scene_reviews: List[Dict[str, Any]]
+    workflow_version: int
     scenario_mcda_weights: Dict[str, float]
     mcda_weights: Dict[str, float]
     phased_strategy: Dict[str, Any]
@@ -178,19 +192,11 @@ class RCPPAgentStateUpdate(TypedDict, total=False):
 
 # Build the Task Orchestration supervisor graph node callable.
 def _make_task_orchestration_node(orchestrator: TaskOrchestrationAgent):
-    """
-    Supervisor node.
-
-    On first entry it parses the global instruction and produces the orchestration result. 
-    On every subsequent visit it acts as a routing hub and returns an empty state update; the downstream
-    conditional_edges dispatches to the next agent based on workflow_status.
-    """
-    # Run orchestration once on init, then return empty updates for routing only.
+    """Parse and initialize once; explicit graph edges determine subsequent stages."""
     def node(state: RCPPAgentState) -> RCPPAgentStateUpdate:
-        logger.info("--- [Supervisor] Task Orchestration ---")
+        logger.info("--- [Node] Task Orchestration ---")
         status = state.get("workflow_status", "init")
         if status != "init":
-            logger.info("Supervisor routing (workflow_status=%s).", status)
             return {}
 
         global_instruction = state.get("global_instruction", {})
@@ -221,34 +227,31 @@ def _make_task_orchestration_node(orchestrator: TaskOrchestrationAgent):
 
 
 # Build the Environment Perception graph node callable.
-def _make_environment_perception_node(agent: EnvironmentPerceptionAgent, store: BaseStore):
+def _make_environment_perception_node(agent: EnvironmentPerceptionAgent, repository: GraphMemoryRepository):
     # Load or build scene-semantic memory from spatialite context and instruction.
     def node(state: RCPPAgentState) -> RCPPAgentStateUpdate:
         logger.info("--- [Node] Environment Perception Agent ---")
         spatialite_context = state.get("spatialite_context", {})
         global_instruction = state.get("global_instruction") or {}
+        global_instruction = {**global_instruction,
+                              "excluded_rps": global_instruction.get("excluded_rps", [])}
         return cast(
             RCPPAgentStateUpdate,
-            agent.perceive(spatialite_context, global_instruction, store=store),
+            agent.perceive(spatialite_context, global_instruction, repository=repository),
         )
 
     return node
 
 
 # Build the Suitability Assessment graph node callable.
-def _make_suitability_assessment_node(agent: SuitabilityAssessmentAgent, store: BaseStore):
+def _make_suitability_assessment_node(agent: SuitabilityAssessmentAgent, repository: GraphMemoryRepository):
     # Filter RPS sites, emit suitability memory events, and set workflow status.
     def node(state: RCPPAgentState) -> RCPPAgentStateUpdate:
         logger.info("--- [Node] Suitability Assessment Agent ---")
+        from src.suitability_assessment_agent import load_rps_gdf_for_export, export_suitability_shapefiles
         ctx = state.get("spatialite_context") or {}
-        area = area_slug_from_spatialite_context(ctx)
-        ns = scene_semantic_namespace(area)
-        mem_item = store.get(ns, SCENE_SEMANTIC_KEY_GLOBAL)
-        memories: Dict[str, Any] = (
-            dict(mem_item.value)
-            if mem_item is not None and isinstance(mem_item.value, dict)
-            else {}
-        )
+        area = _area_slug(ctx)
+        memories = _load_progressive_memory(repository, area, (state.get("global_instruction") or {}).get("excluded_rps"))
 
         suitable_rps, evaluations = agent.assess_suitability(memories)
 
@@ -272,13 +275,12 @@ def _make_suitability_assessment_node(agent: SuitabilityAssessmentAgent, store: 
                     "value": ev.overall_score,
                 })
 
-        memory_out = copy.deepcopy(memories)
-        applied = _apply_memory_update_events_to_memory(memory_out, events)
-        store.put(ns, SCENE_SEMANTIC_KEY_GLOBAL, memory_out)
-        logger.info(
-            "Suitability: persisted %s suitability annotation events to scene-semantic store.",
-            applied,
-        )
+        repository.append_decisions(str((state.get("global_instruction") or {}).get("run_id") or "unknown"), [
+            {"area": area, "rps_id": event["rps_id"],
+             "outcome": event["field"], "reason": str(event["value"]),
+             "rules": ["suitability_assessment"], "fact_ids": []}
+            for event in events
+        ])
 
         gdf = load_rps_gdf_for_export(ctx)
         if gdf is not None:
@@ -307,24 +309,19 @@ def _make_suitability_assessment_node(agent: SuitabilityAssessmentAgent, store: 
 
 
 # Build the Multi-Scenario Evaluation graph node callable.
-def _make_multi_scenario_evaluation_node(agent: MultiScenarioEvaluationAgent, store: BaseStore):
+def _make_multi_scenario_evaluation_node(agent: MultiScenarioEvaluationAgent, repository: GraphMemoryRepository):
     """
     Load scene-semantic store after suitability write; compute MCDA weights via LLM-AHP.
     """
     def node(state: RCPPAgentState) -> RCPPAgentStateUpdate:
         logger.info("--- [Node] Multi-Scenario Evaluation Agent ---")
+        from src.phased_decision_making_agent import write_json_path
         scenario = state.get("scenario", "equity_oriented")
         iteration = state.get("iteration_count", 0)
 
         ctx = state.get("spatialite_context") or {}
-        area = area_slug_from_spatialite_context(ctx)
-        ns = scene_semantic_namespace(area)
-        mem_item = store.get(ns, SCENE_SEMANTIC_KEY_GLOBAL)
-        memories: Dict[str, Any] = (
-            dict(mem_item.value)
-            if mem_item is not None and isinstance(mem_item.value, dict)
-            else {}
-        )
+        area = _area_slug(ctx)
+        memories = _load_progressive_memory(repository, area, (state.get("global_instruction") or {}).get("excluded_rps"))
         logger.info(
             "Multi-Scenario Evaluation: loaded scene-semantic store (%s RPS keys).",
             len(memories),
@@ -369,20 +366,16 @@ def _make_multi_scenario_evaluation_node(agent: MultiScenarioEvaluationAgent, st
 
 
 # Build the Phased Decision-Making graph node callable.
-def _make_phased_decision_making_node(agent: PhasedDecisionMakingAgent, store: BaseStore):
+def _make_phased_decision_making_node(agent: PhasedDecisionMakingAgent, repository: GraphMemoryRepository):
     # Score candidates, select quota, emit priority memory events, and set status.
     def node(state: RCPPAgentState) -> RCPPAgentStateUpdate:
         logger.info("--- [Node] Phased Decision-Making Agent ---")
+        from src.suitability_assessment_agent import load_rps_gdf_for_export, guess_rps_id_column
+        from src.phased_decision_making_agent import write_json_path, export_phase_rps_shapefile
         suitable_rps = state.get("suitable_rps", [])
         ctx = state.get("spatialite_context") or {}
-        area = area_slug_from_spatialite_context(ctx)
-        ns = scene_semantic_namespace(area)
-        mem_item = store.get(ns, SCENE_SEMANTIC_KEY_GLOBAL)
-        memories: Dict[str, Any] = (
-            dict(mem_item.value)
-            if mem_item is not None and isinstance(mem_item.value, dict)
-            else {}
-        )
+        area = _area_slug(ctx)
+        memories = _load_progressive_memory(repository, area, (state.get("global_instruction") or {}).get("excluded_rps"))
         scenario_mcda_weights = state.get("scenario_mcda_weights", {})
         scenario = state.get("scenario", "equity_oriented")
         time_horizon = state.get("time_horizon")
@@ -510,7 +503,7 @@ def _make_phased_decision_making_node(agent: PhasedDecisionMakingAgent, store: B
 
 
 # Build the Memory Update graph node callable.
-def _make_memory_update_node(store: BaseStore):
+def _make_memory_update_node(repository: GraphMemoryRepository):
     """
     Updates phased priority score events to scene-semantic memory.
     """
@@ -541,23 +534,14 @@ def _make_memory_update_node(store: BaseStore):
             return state_patch
 
         ctx = state.get("spatialite_context") or {}
-        area = area_slug_from_spatialite_context(ctx)
-        ns = scene_semantic_namespace(area)
-        mem_item = store.get(ns, SCENE_SEMANTIC_KEY_GLOBAL)
-        memory = copy.deepcopy(
-            dict(mem_item.value)
-            if mem_item is not None and isinstance(mem_item.value, dict)
-            else {}
-        )
-
-        applied = _apply_memory_update_events_to_memory(memory, events)
-
-        logger.info(
-            "Memory update: %s phased priority events (of %s raw), %s applied to %s RPS nodes.",
-            len(events), len(raw), applied, len(memory),
-        )
-
-        store.put(ns, SCENE_SEMANTIC_KEY_GLOBAL, memory)
+        area = _area_slug(ctx)
+        run_id = str((state.get("global_instruction") or {}).get("run_id") or "unknown")
+        repository.append_decisions(run_id, [
+            {"area": area, "rps_id": event["rps_id"], "outcome": "priority_scored",
+             "reason": str(event["value"]), "rules": ["phased_priority"], "fact_ids": []}
+            for event in events
+        ])
+        logger.info("Memory update: persisted %s phased decisions (of %s raw).", len(events), len(raw))
 
         return {
             "memory_update_events": [
@@ -575,23 +559,18 @@ def _make_memory_update_node(store: BaseStore):
 
 
 # Build the Review graph node callable with iteration capacity for weight readjust.
-def _make_review_node(agent: ReviewAgent, max_iterations: int, store: BaseStore):
+def _make_review_node(agent: ReviewAgent, max_iterations: int, repository: GraphMemoryRepository):
     # Run metrics-based review, set retry flags, and bump iteration count.
     def node(state: RCPPAgentState) -> RCPPAgentStateUpdate:
         logger.info("--- [Node] Review Agent ---")
+        from src.review_agent import write_review_metrics_json
         strategy = state.get("phased_strategy", {})
         candidates = state.get("scored_candidates", [])
         iteration_count = state.get("iteration_count", 0)
 
         ctx = state.get("spatialite_context") or {}
-        area = area_slug_from_spatialite_context(ctx)
-        ns = scene_semantic_namespace(area)
-        mem_item = store.get(ns, SCENE_SEMANTIC_KEY_GLOBAL)
-        memories: Dict[str, Any] = (
-            dict(mem_item.value)
-            if mem_item is not None and isinstance(mem_item.value, dict)
-            else {}
-        )
+        area = _area_slug(ctx)
+        memories = _load_progressive_memory(repository, area, (state.get("global_instruction") or {}).get("excluded_rps"))
         poi_raw = ctx.get("poi_dir")
         if poi_raw:
             poi_dir = Path(poi_raw)
@@ -650,31 +629,6 @@ def _make_review_node(agent: ReviewAgent, max_iterations: int, store: BaseStore)
     return node
 
 
-# Supervisor routing: Task Orchestration hub decides the next worker agent based on the latest workflow_status (and readjust signal after Review).
-_SUPERVISOR_ROUTE_MAP: Dict[str, str] = {
-    "task_orchestrated": "EnvironmentPerception",
-    "perception_completed": "SuitabilityAssessment",
-    "suitability_assessed": "MultiScenarioEvaluation",
-    "weights_calculated": "PhasedDecisionMaking",
-    "decision_made": "MemoryUpdate",
-    "memory_updated": "Review",
-}
-
-
-# Map workflow_status to the next worker node name or end the run after Review.
-def supervisor_route(state: RCPPAgentState) -> str:
-    status = state.get("workflow_status", "init")
-    if status in ("review_completed", "review_failed_retry"):
-        if state.get("should_readjust_weights"):
-            return "MultiScenarioEvaluation"
-        return END
-    target = _SUPERVISOR_ROUTE_MAP.get(status)
-    if target is None:
-        logger.warning("Supervisor received unknown workflow_status=%s; ending workflow.", status)
-        return END
-    return target
-
-
 # Graph construction
 def create_rcpp_workflow(
     task_orchestration_agent: TaskOrchestrationAgent,
@@ -684,63 +638,20 @@ def create_rcpp_workflow(
     phased_decision_making_agent: PhasedDecisionMakingAgent,
     review_agent: ReviewAgent,
     max_iterations: int,
-    store: BaseStore,
+    repository: GraphMemoryRepository,
     checkpointer: Any = None,
 ) -> Any:
-    """
-    Build and compile the workflow graph as a supervisor topology: the Task
-    Orchestration Agent is the central hub; every worker agent returns to it,
-    and the supervisor routes to the next worker by workflow_status.
-    """
-    workflow = StateGraph(RCPPAgentState)
-
-    workflow.add_node("TaskOrchestration", _make_task_orchestration_node(task_orchestration_agent))
-    workflow.add_node(
-        "EnvironmentPerception",
-        _make_environment_perception_node(environment_perception_agent, store),
-    )
-    workflow.add_node(
-        "SuitabilityAssessment",
-        _make_suitability_assessment_node(suitability_assessment_agent, store),
-    )
-    workflow.add_node(
-        "MultiScenarioEvaluation",
-        _make_multi_scenario_evaluation_node(multi_scenario_evaluation_agent, store),
-    )
-    workflow.add_node(
-        "PhasedDecisionMaking",
-        _make_phased_decision_making_node(phased_decision_making_agent, store),
-    )
-    workflow.add_node("MemoryUpdate", _make_memory_update_node(store))
-    workflow.add_node("Review", _make_review_node(review_agent, max_iterations, store))
-
-    workflow.set_entry_point("TaskOrchestration")
-
-    workflow.add_conditional_edges(
-        "TaskOrchestration",
-        supervisor_route,
-        {
-            "EnvironmentPerception": "EnvironmentPerception",
-            "SuitabilityAssessment": "SuitabilityAssessment",
-            "MultiScenarioEvaluation": "MultiScenarioEvaluation",
-            "PhasedDecisionMaking": "PhasedDecisionMaking",
-            "MemoryUpdate": "MemoryUpdate",
-            "Review": "Review",
-            END: END,
-        },
-    )
-
-    for worker in (
-        "EnvironmentPerception",
-        "SuitabilityAssessment",
-        "MultiScenarioEvaluation",
-        "PhasedDecisionMaking",
-        "MemoryUpdate",
-        "Review",
-    ):
-        workflow.add_edge(worker, "TaskOrchestration")
-
-    return workflow.compile(checkpointer=checkpointer, store=store)
+    """Compile direct stage edges; branch only for human review and outcome revision."""
+    return compile_planning_graph(RCPPAgentState, {
+        "TaskOrchestration": _make_task_orchestration_node(task_orchestration_agent),
+        "EnvironmentPerception": _make_environment_perception_node(environment_perception_agent, repository),
+        "HumanReview": make_human_review_node(repository),
+        "SuitabilityAssessment": _make_suitability_assessment_node(suitability_assessment_agent, repository),
+        "MultiScenarioEvaluation": _make_multi_scenario_evaluation_node(multi_scenario_evaluation_agent, repository),
+        "PhasedDecisionMaking": _make_phased_decision_making_node(phased_decision_making_agent, repository),
+        "MemoryUpdate": _make_memory_update_node(repository),
+        "Review": _make_review_node(review_agent, max_iterations, repository),
+    }, checkpointer=checkpointer)
 
 
 # Public workflow runtime used by the CLI.
@@ -748,14 +659,19 @@ class RCPPAgent:
 
     # Wire agents, checkpointing, and the compiled LangGraph workflow.
     def __init__(self, max_iterations: Optional[int] = None, checkpointer: Any = None):
-        
+        from src.task_orchestration_agent import TaskOrchestrationAgent
+        from src.environment_perception_agent import EnvironmentPerceptionAgent
+        from src.suitability_assessment_agent import SuitabilityAssessmentAgent
+        from src.multi_scenario_evaluation_agent import MultiScenarioEvaluationAgent
+        from src.phased_decision_making_agent import PhasedDecisionMakingAgent
+        from src.review_agent import ReviewAgent
         if checkpointer is not None:
             self._checkpointer = checkpointer
         else:
             db_path = default_checkpoint_db_path()
             db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(db_path), check_same_thread=False)
-            self._checkpointer = SqliteSaver(conn)
+            self._checkpoint_conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            self._checkpointer = SqliteSaver(self._checkpoint_conn)
 
         self.max_iterations = (
             max_iterations
@@ -768,7 +684,7 @@ class RCPPAgent:
         self.multi_scenario_evaluation_agent = MultiScenarioEvaluationAgent()
         self.phased_decision_making_agent = PhasedDecisionMakingAgent()
         self.review_agent = ReviewAgent()
-        self._long_term_store: BaseStore = Neo4jGlobalSceneSemanticStore()
+        self._memory_repository = GraphMemoryRepository()
 
         self.workflow = create_rcpp_workflow(
             self.task_orchestration_agent,
@@ -778,7 +694,7 @@ class RCPPAgent:
             self.phased_decision_making_agent,
             self.review_agent,
             self.max_iterations,
-            self._long_term_store,
+            self._memory_repository,
             checkpointer=self._checkpointer,
         )
         logger.info("RCPP-Agent multi-agent architecture initialized.")
@@ -789,6 +705,7 @@ class RCPPAgent:
         self,
         global_instruction: Optional[Dict[str, Any]] = None,
         thread_id: Optional[str] = None,
+        review_response: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Execute the RCPP-Agent.
@@ -798,7 +715,12 @@ class RCPPAgent:
         fresh run is started from *global_instruction*.
         """
         tid = thread_id or uuid.uuid4().hex
+        with exclusive_file(run_directory(tid) / "runtime.lock"):
+            return self._run_locked(global_instruction, tid, review_response)
+
+    def _run_locked(self, global_instruction, tid, review_response):
         config = {"configurable": {"thread_id": tid}}
+        config["recursion_limit"] = max(100, 20 * (self.max_iterations + 1))
 
         existing = self.workflow.get_state(config)
         can_resume = (
@@ -808,14 +730,21 @@ class RCPPAgent:
         )
 
         if can_resume:
+            if existing.values.get("workflow_version") != WORKFLOW_VERSION:
+                raise ValueError("Checkpoint uses the previous graph topology; start a new run_id")
             logger.info("Resuming RCPP-Agent from checkpoint; thread_id=%s", tid)
-            result_state = self.workflow.invoke(None, config=config)
+            result_state = self.workflow.invoke(
+                Command(resume=review_response) if review_response is not None else None, config=config)
         else:
+            if review_response is not None:
+                raise ValueError("No pending workflow is available for this review response")
             if global_instruction is None:
                 raise ValueError(
                     "global_instruction is required when starting a new run "
                     "(no resumable checkpoint found for thread_id=%s)." % tid
                 )
+            global_instruction = dict(global_instruction)
+            global_instruction.setdefault("run_id", tid)
             logger.info("Starting the RCPP-Agent; thread_id=%s instruction=%s", tid, global_instruction)
 
             initial_state = {
@@ -827,6 +756,8 @@ class RCPPAgent:
                 "year": global_instruction.get("year", 2025),
                 "suitable_rps": [],
                 "suitability_evaluations": [],
+                "retrieval_events": [],
+                "retrieval_summary": {},
                 "scenario_mcda_weights": {},
                 "mcda_weights": {},
                 "phased_strategy": {},
@@ -838,21 +769,39 @@ class RCPPAgent:
                 "should_readjust_weights": False,
                 "iteration_count": 0,
                 "workflow_status": "init",
+                "workflow_version": WORKFLOW_VERSION,
+                "pending_scene_reviews": [],
             }
             result_state = self.workflow.invoke(initial_state, config=config)
 
+        snapshot = self.workflow.get_state(config)
+        pending_interrupts = [i.value for task in snapshot.tasks for i in task.interrupts]
         final_output = {
-            "status": result_state.get("workflow_status"),
+            "status": "awaiting_review" if pending_interrupts else result_state.get("workflow_status"),
+            "pending_reviews": pending_interrupts,
             "iterations": result_state.get("iteration_count"),
             "phased_strategy": result_state.get("phased_strategy"),
             "scored_candidates": result_state.get("scored_candidates"),
             "mcda_weights": result_state.get("mcda_weights"),
             "review_result": result_state.get("review_result"),
+            "retrieval_events": result_state.get("retrieval_events", []),
+            "retrieval_summary": result_state.get("retrieval_summary", {}),
             "thread_id": tid,
         }
 
         logger.info("RCPP-Agent finished.")
         return final_output
+
+    def close(self):
+        connection = getattr(self, "_checkpoint_conn", None)
+        if connection is not None:
+            connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
     def get_run_state(self, thread_id: str) -> Dict[str, Any]:
         """
