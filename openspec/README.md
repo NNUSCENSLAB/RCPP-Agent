@@ -9,6 +9,7 @@ Active changes:
 - `cli-only-runtime`
 - `memory-lifecycle-and-retrieval`
 - `memory-aware-cascade-router`
+- `scene-semantic-progressive-graph-memory`
 
 Implementation status is tracked in each `tasks.md`. A checked task means code and
 tests exist; it does not by itself mean a candidate model passed the promotion gate.

@@ -36,6 +36,16 @@ SCENE_SYSTEM_PROMPT = """You are an expert in roadside parking-stall scene perce
 Focus ONLY on the RED-BOXED roadside parking stall and its lateral zone.
 Follow the exclusionary priority: (1) existing RCP, (2) functional zone, (3) obstacle count ≥ 3.
 
+Interpretation rules:
+- The motor vehicle normally parked inside the red box is the target stall occupant. Ignore it when
+  judging existing RCP, functional-zone use, ground obstacles, and installation clearance.
+- Inspect the curb/sidewalk-side lateral strip adjacent to that stall. Do not count objects belonging
+  to other stalls or non-red-box zones.
+- Tree canopy and greenbelt noted only as visual distractors do not count as ground obstacles unless
+  a trunk or shrubbery physically occupies the target lateral strip.
+- Set clearance_visual_assessment to true exactly when has_existing_RCP is false,
+  is_functional_zone is false, and ground_obstacle_count is less than 3. Otherwise set it to false.
+
 Output ONLY a JSON with this exact schema (no extra text):
 {
   "has_existing_RCP": boolean,

@@ -19,4 +19,4 @@ dependencies = [
 rcpp = "rcpp_cli.app:main"
 
 [tool.setuptools.packages.find]
-include = ["configs*", "rcpp_cli*", "rcpp_core*", "src*", "tools*"]
+include = ["configs*", "evaluation*", "rcpp_cli*", "rcpp_core*", "src*", "tools*"]

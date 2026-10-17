@@ -4,7 +4,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from rcpp_cli.app import main
+from rcpp_cli.app import build_parser, main
 
 
 class CliTests(unittest.TestCase):
@@ -24,6 +24,19 @@ class CliTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             code = main(["router", "explain", "--kind", "semantic", "--memory-state", "fresh", "--memory-quality", "0.95"])
         self.assertEqual(0, code)
+
+    def test_retrieval_eval_cli_is_registered(self):
+        args = build_parser().parse_args(["eval", "retrieval", "--area", "gulou"])
+        self.assertEqual("retrieval", args.target)
+        self.assertEqual("detailed-active", args.cohort)
+
+    def test_qwen3_route_eval_cli_is_registered(self):
+        args = build_parser().parse_args([
+            "eval", "qwen3-route", "--calls-file", "calls.jsonl",
+            "--combined-file", "combined.json",
+        ])
+        self.assertEqual("qwen3-route", args.target)
+        self.assertEqual("calls.jsonl", args.calls_file)
 
 
 if __name__ == "__main__":
